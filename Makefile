@@ -32,7 +32,7 @@ PLATFORM_LIST = \
 	linux-mipsle-softfloat \
 	linux-mipsle-hardfloat \
 	android-arm64 \
-	freebsd-386 \
+	linux-386 \
 	freebsd-amd64 \
 	freebsd-arm64
 
