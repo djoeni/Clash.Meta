@@ -18,11 +18,8 @@ func (d *Domain) RuleType() C.RuleType {
 	return C.Domain
 }
 
-func (d *Domain) Match(metadata *C.Metadata) bool {
-	if metadata.AddrType != C.AtypDomainName {
-		return false
-	}
-	return metadata.Host == d.domain
+func (d *Domain) Match(metadata *C.Metadata) (bool, string) {
+	return metadata.Host == d.domain, d.adapter
 }
 
 func (d *Domain) Adapter() string {
@@ -47,4 +44,4 @@ func NewDomain(domain string, adapter string) *Domain {
 	}
 }
 
-var _ C.Rule = (*Domain)(nil)
+//var _ C.Rule = (*Domain)(nil)

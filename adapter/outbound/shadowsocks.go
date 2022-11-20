@@ -7,24 +7,19 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/Dreamacro/clash/common/pool"
 	"github.com/Dreamacro/clash/common/structure"
 	"github.com/Dreamacro/clash/component/dialer"
 	C "github.com/Dreamacro/clash/constant"
 	obfs "github.com/Dreamacro/clash/transport/simple-obfs"
 	"github.com/Dreamacro/clash/transport/socks5"
 	v2rayObfs "github.com/Dreamacro/clash/transport/v2ray-plugin"
+
 	"github.com/sagernet/sing-shadowsocks"
 	"github.com/sagernet/sing-shadowsocks/shadowimpl"
-	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/uot"
 )
-
-func init() {
-	buf.DefaultAllocator = pool.DefaultAllocator
-}
 
 type ShadowSocks struct {
 	*Base
@@ -82,8 +77,7 @@ func (ss *ShadowSocks) StreamConn(c net.Conn, metadata *C.Metadata) (net.Conn, e
 		}
 	}
 	if metadata.NetWork == C.UDP && ss.option.UDPOverTCP {
-		metadata.Host = uot.UOTMagicAddress
-		metadata.DstPort = "443"
+		return ss.method.DialConn(c, M.ParseSocksaddr(uot.UOTMagicAddress+":443"))
 	}
 	return ss.method.DialConn(c, M.ParseSocksaddr(metadata.RemoteAddress()))
 }
@@ -116,7 +110,7 @@ func (ss *ShadowSocks) ListenPacketContext(ctx context.Context, metadata *C.Meta
 		return nil, err
 	}
 
-	addr, err := resolveUDPAddrWithPrefer("udp", ss.addr, ss.prefer)
+	addr, err := resolveUDPAddrWithPrefer(ctx, "udp", ss.addr, ss.prefer)
 	if err != nil {
 		pc.Close()
 		return nil, err

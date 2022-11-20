@@ -74,8 +74,8 @@ func (s *Selector) Set(name string) error {
 }
 
 // Unwrap implements C.ProxyAdapter
-func (s *Selector) Unwrap(*C.Metadata) C.Proxy {
-	return s.selectedProxy(true)
+func (s *Selector) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
+	return s.selectedProxy(touch)
 }
 
 func (s *Selector) selectedProxy(touch bool) C.Proxy {
@@ -99,6 +99,7 @@ func NewSelector(option *GroupCommonOption, providers []provider.ProxyProvider) 
 				RoutingMark: option.RoutingMark,
 			},
 			option.Filter,
+			option.ExcludeFilter,
 			providers,
 		}),
 		selected:   "COMPATIBLE",

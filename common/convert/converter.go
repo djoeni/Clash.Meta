@@ -47,7 +47,7 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			hysteria["port"] = urlHysteria.Port()
 			hysteria["sni"] = query.Get("peer")
 			hysteria["obfs"] = query.Get("obfs")
-			hysteria["alpn"] = query.Get("alpn")
+			hysteria["alpn"] = []string{query.Get("alpn")}
 			hysteria["auth_str"] = query.Get("auth")
 			hysteria["protocol"] = query.Get("protocol")
 			up := query.Get("up")
@@ -143,6 +143,14 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 				vmess["cipher"] = "auto"
 				if encryption := query.Get("encryption"); encryption != "" {
 					vmess["cipher"] = encryption
+				}
+				if packetEncoding := query.Get("packetEncoding"); packetEncoding != "" {
+					switch packetEncoding {
+					case "packet":
+						vmess["packet-addr"] = true
+					case "xudp":
+						vmess["xudp"] = true
+					}
 				}
 				proxies = append(proxies, vmess)
 				continue
@@ -279,7 +287,7 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 				}
 			}
 
-			ss := make(map[string]any, 20)
+			ss := make(map[string]any, 10)
 
 			ss["name"] = name
 			ss["type"] = scheme
@@ -289,6 +297,9 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			ss["password"] = password
 			query := urlSS.Query()
 			ss["udp"] = true
+			if query.Get("udp-over-tcp") == "true" || query.Get("uot") == "1" {
+				ss["udp-over-tcp"] = true
+			}
 			if strings.Contains(query.Get("plugin"), "obfs") {
 				obfsParams := strings.Split(query.Get("plugin"), ";")
 				ss["plugin"] = "obfs"

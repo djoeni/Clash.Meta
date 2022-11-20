@@ -31,7 +31,7 @@ func (f *Fallback) DialContext(ctx context.Context, metadata *C.Metadata, opts .
 		c.AppendToChains(f)
 		f.onDialSuccess()
 	} else {
-		f.onDialFailed()
+		f.onDialFailed(proxy.Type(), err)
 	}
 
 	return c, err
@@ -72,8 +72,8 @@ func (f *Fallback) MarshalJSON() ([]byte, error) {
 }
 
 // Unwrap implements C.ProxyAdapter
-func (f *Fallback) Unwrap(metadata *C.Metadata) C.Proxy {
-	proxy := f.findAliveProxy(true)
+func (f *Fallback) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
+	proxy := f.findAliveProxy(touch)
 	return proxy
 }
 
@@ -131,6 +131,7 @@ func NewFallback(option *GroupCommonOption, providers []provider.ProxyProvider) 
 				RoutingMark: option.RoutingMark,
 			},
 			option.Filter,
+			option.ExcludeFilter,
 			providers,
 		}),
 		disableUDP: option.DisableUDP,

@@ -2,14 +2,13 @@ package executor
 
 import (
 	"fmt"
-	"github.com/Dreamacro/clash/component/tls"
-	"github.com/Dreamacro/clash/listener/inner"
 	"net/netip"
 	"os"
 	"runtime"
 	"sync"
 
 	"github.com/Dreamacro/clash/adapter"
+	"github.com/Dreamacro/clash/adapter/inbound"
 	"github.com/Dreamacro/clash/adapter/outboundgroup"
 	"github.com/Dreamacro/clash/component/auth"
 	"github.com/Dreamacro/clash/component/dialer"
@@ -19,6 +18,7 @@ import (
 	"github.com/Dreamacro/clash/component/profile/cachefile"
 	"github.com/Dreamacro/clash/component/resolver"
 	SNI "github.com/Dreamacro/clash/component/sniffer"
+	"github.com/Dreamacro/clash/component/tls"
 	"github.com/Dreamacro/clash/component/trie"
 	"github.com/Dreamacro/clash/config"
 	C "github.com/Dreamacro/clash/constant"
@@ -26,6 +26,7 @@ import (
 	"github.com/Dreamacro/clash/dns"
 	P "github.com/Dreamacro/clash/listener"
 	authStore "github.com/Dreamacro/clash/listener/auth"
+	"github.com/Dreamacro/clash/listener/inner"
 	"github.com/Dreamacro/clash/listener/tproxy"
 	"github.com/Dreamacro/clash/log"
 	"github.com/Dreamacro/clash/tunnel"
@@ -86,7 +87,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	loadRuleProvider(cfg.RuleProviders)
 	updateGeneral(cfg.General, force)
 	updateIPTables(cfg)
-	updateTun(cfg.Tun)
+	updateTun(cfg.General)
 	updateExperimental(cfg)
 
 	log.SetLevel(cfg.General.LogLevel)
@@ -105,14 +106,18 @@ func GetGeneral() *config.General {
 
 	general := &config.General{
 		Inbound: config.Inbound{
-			Port:           ports.Port,
-			SocksPort:      ports.SocksPort,
-			RedirPort:      ports.RedirPort,
-			TProxyPort:     ports.TProxyPort,
-			MixedPort:      ports.MixedPort,
-			Authentication: authenticator,
-			AllowLan:       P.AllowLan(),
-			BindAddress:    P.BindAddress(),
+			Port:              ports.Port,
+			SocksPort:         ports.SocksPort,
+			RedirPort:         ports.RedirPort,
+			TProxyPort:        ports.TProxyPort,
+			MixedPort:         ports.MixedPort,
+			ShadowSocksConfig: ports.ShadowSocksConfig,
+			VmessConfig:       ports.VmessConfig,
+			TcpTunConfig:      ports.TcpTunConfig,
+			UdpTunConfig:      ports.UdpTunConfig,
+			Authentication:    authenticator,
+			AllowLan:          P.AllowLan(),
+			BindAddress:       P.BindAddress(),
 		},
 		Mode:          tunnel.Mode(),
 		LogLevel:      log.Level(),
@@ -258,14 +263,20 @@ func loadProxyProvider(proxyProviders map[string]provider.ProxyProvider) {
 	wg.Wait()
 }
 
-func updateTun(tun *config.Tun) {
-	P.ReCreateTun(tun, tunnel.TCPIn(), tunnel.UDPIn())
-	P.ReCreateRedirToTun(tun.RedirectToTun)
+func updateTun(general *config.General) {
+	if general == nil {
+		return
+	}
+	P.ReCreateTun(general.Tun, tunnel.TCPIn(), tunnel.UDPIn())
+	P.ReCreateRedirToTun(general.Tun.RedirectToTun)
 }
 
 func updateSniffer(sniffer *config.Sniffer) {
 	if sniffer.Enable {
-		dispatcher, err := SNI.NewSnifferDispatcher(sniffer.Sniffers, sniffer.ForceDomain, sniffer.SkipDomain, sniffer.Ports)
+		dispatcher, err := SNI.NewSnifferDispatcher(
+			sniffer.Sniffers, sniffer.ForceDomain, sniffer.SkipDomain, sniffer.Ports,
+			sniffer.ForceDnsMapping, sniffer.ParsePureIp,
+		)
 		if err != nil {
 			log.Warnln("initial sniffer failed, err:%v", err)
 		}
@@ -325,7 +336,7 @@ func updateGeneral(general *config.General, force bool) {
 	bindAddress := general.BindAddress
 	P.SetBindAddress(bindAddress)
 
-	P.SetInboundTfo(general.InboundTfo)
+	inbound.SetTfo(general.InboundTfo)
 
 	tcpIn := tunnel.TCPIn()
 	udpIn := tunnel.UDPIn()
@@ -336,6 +347,10 @@ func updateGeneral(general *config.General, force bool) {
 	P.ReCreateAutoRedir(general.EBpf.AutoRedir, tcpIn, udpIn)
 	P.ReCreateTProxy(general.TProxyPort, tcpIn, udpIn)
 	P.ReCreateMixed(general.MixedPort, tcpIn, udpIn)
+	P.ReCreateShadowSocks(general.ShadowSocksConfig, tcpIn, udpIn)
+	P.ReCreateVmess(general.VmessConfig, tcpIn, udpIn)
+	P.ReCreateTcpTun(general.TcpTunConfig, tcpIn, udpIn)
+	P.ReCreateUdpTun(general.UdpTunConfig, tcpIn, udpIn)
 }
 
 func updateUsers(users []auth.AuthUser) {
@@ -397,7 +412,7 @@ func updateIPTables(cfg *config.Config) {
 		}
 	}()
 
-	if cfg.Tun.Enable {
+	if cfg.General.Tun.Enable {
 		err = fmt.Errorf("when tun is enabled, iptables cannot be set automatically")
 		return
 	}

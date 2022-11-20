@@ -40,12 +40,40 @@ hosts:
 # Tun 配置
 tun:
   enable: false
-  stack: system # gvisor
+  stack: system # gvisor / lwip
   dns-hijack:
-    - 198.18.0.2:53 # 需要劫持的 DNS
+    - 0.0.0.0:53 # 需要劫持的 DNS
   # auto-detect-interface: true # 自动识别出口网卡
   # auto-route: true # 配置路由表
-
+  # mtu: 9000 # 最大传输单元
+  # strict_route: true # 将所有连接路由到tun来防止泄漏，但你的设备将无法其他设备被访问
+  inet4_route_address: # 启用 auto_route 时使用自定义路由而不是默认路由
+    - 0.0.0.0/1
+    - 128.0.0.0/1
+  inet6_route_address: # 启用 auto_route 时使用自定义路由而不是默认路由
+    - '::/1'
+    - '8000::/1'
+  # endpoint_independent_nat: false # 启用独立于端点的 NAT
+  # include_uid: # UID 规则仅在 Linux 下被支持，并且需要 auto_route
+    # - 0
+  # include_uid_range: # 限制被路由的的用户范围
+    # - 1000-99999
+  # exclude_uid: # 排除路由的的用户
+    #- 1000
+  # exclude_uid_range: # 排除路由的的用户范围
+    # - 1000-99999
+    
+  # Android 用户和应用规则仅在 Android 下被支持
+  # 并且需要 auto_route
+  
+  # include_android_user: # 限制被路由的 Android 用户
+    # - 0
+    # - 10
+  # include_package: # 限制被路由的 Android 应用包名
+    # - com.android.chrome
+  # exclude_package: # 排除被路由的 Android 应用包名
+    # - com.android.captiveportallogin
+  
 #ebpf配置
 ebpf:
   auto-redir: # redirect 模式，仅支持 TCP
@@ -69,6 +97,12 @@ sniffer:
     - "443"
     # - 8000-9999
 
+# shadowsocks,vmess,tcp/udp端口转发 入口配置（传入流量将和socks,mixed等入口一样按照mode所指定的方式进行匹配处理）
+# ss-config: ss://2022-blake3-aes-256-gcm:vlmpIPSyHH6f4S8WVPdRIHIlzmB+GIRfoH3aNJ/t9Gg=@:23456
+# vmess-config: vmess://1:9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68@:12345
+# tcptun-config: 127.0.0.1:801=www.example.com:80,127.0.0.1:4431=www.example.com:443
+# udptun-config: 127.0.0.1:531=8.8.8.8:53,127.0.0.1:532=1.1.1.1:53
+
 profile:
   # 存储select选择记录
   store-selected: false
@@ -79,6 +113,7 @@ profile:
 # DNS配置
 dns:
   enable: false # 关闭将使用系统 DNS
+  perfer-h3: true # 开启 DoH 支持 HTTP/3，将并发尝试
   listen: 0.0.0.0:53 # 开启 DNS 服务器监听
   # ipv6: false # false 将返回 AAAA 的空结果
 
@@ -108,7 +143,7 @@ dns:
     - 8.8.8.8 # default value
     - tls://223.5.5.5:853 # DNS over TLS
     - https://doh.pub/dns-query # DNS over HTTPS
-    - https://dns.alidns.com/dns-query#h3=true # 强制HTTP/3
+    - https://dns.alidns.com/dns-query#h3=true # 强制 HTTP/3，与 perfer-h3 无关，强制开启 DoH 的 HTTP/3 支持，若不支持将无法使用
     - https://mozilla.cloudflare-dns.com/dns-query#DNS&h3=true # 指定策略组和使用 HTTP/3
     - dhcp://en0 # dns from dhcp
     - quic://dns.adguard.com:784 # DNS over QUIC
@@ -162,14 +197,14 @@ proxies:
     port: 443
     cipher: chacha20-ietf-poly1305
     password: "password"
-    # udp: true
-    # udp-over-tcp: false
-    # ip-version: ipv4 # 设置节点使用 IP 版本，可选：dual，ipv4，ipv6，ipv4-prefer，ipv6-prefer。默认使用 dual
-                       # ipv4：仅使用 IPv4  ipv6：仅使用 IPv6
-                       # ipv4-prefer：优先使用 IPv4 对于 TCP 会进行双栈解析，并发链接但是优先使用 IPv4 链接,
-                       # UDP 则为双栈解析，获取结果中的第一个 IPv4
-                       # ipv6-prefer 同 ipv4-prefer
-                       # 现有协议都支持此参数，TCP 效果仅在开启 tcp-concurrent 生效
+      # udp: true
+      # udp-over-tcp: false
+      # ip-version: ipv4 # 设置节点使用 IP 版本，可选：dual，ipv4，ipv6，ipv4-prefer，ipv6-prefer。默认使用 dual
+      # ipv4：仅使用 IPv4  ipv6：仅使用 IPv6
+      # ipv4-prefer：优先使用 IPv4 对于 TCP 会进行双栈解析，并发链接但是优先使用 IPv4 链接,
+      # UDP 则为双栈解析，获取结果中的第一个 IPv4
+      # ipv6-prefer 同 ipv4-prefer
+    # 现有协议都支持此参数，TCP 效果仅在开启 tcp-concurrent 生效
   - name: "ss2"
     type: ss
     server: server
@@ -391,13 +426,16 @@ proxies:
       path: "/"
       headers:
         Host: example.com
+  
+  #hysteria
   - name: "hysteria"
     type: hysteria
     server: server.com
     port: 443
     auth_str: yourpassword
     # obfs: obfs_str
-    # alpn: h3
+    # alpn:
+    #   - h3
     protocol: udp # 支持 udp/wechat-video/faketcp
     up: "30 Mbps" # 若不写单位，默认为 Mbps
     down: "200 Mbps" # 若不写单位，默认为 Mbps
@@ -409,6 +447,16 @@ proxies:
     #ca_str: "xyz"
     #disable_mtu_discovery: false
     # fingerprint: xxxx
+
+  - name: "wg"
+    type: wireguard
+    server: 162.159.192.1
+    port: 2480
+    ip: 172.16.0.2
+    ipv6: fd01:5ca1:ab1e:80fa:ab85:6eea:213f:f4a5
+    private-key: eCtXsJZ27+4PbhDkHnB923tkUn2Gj59wZw5wFA75MnU=
+    public-key: Cr8hWlKvtDt7nrvf+f0brNQQzabAqrjfBvas9pmowjo=
+    udp: true
 
   # ShadowsocksR
   # The supported ciphers (encryption methods): all stream ciphers in ss
@@ -538,3 +586,29 @@ rules:
   - DOMAIN-KEYWORD,google,ss1
   - IP-CIDR,1.1.1.1/32,ss1
   - IP-CIDR6,2409::/64,DIRECT
+  - SUB-RULE,(OR,((NETWORK,TCP),(NETWORK,UDP))),sub-rule-name1 # 当满足条件是 TCP 或 UDP 流量时，使用名为 sub-rule-name1 当规则集
+  - SUB-RULE,(AND,((NETWORK,UDP))),sub-rule-name2
+# 定义多个子规则集，规则将以分叉匹配，使用 SUB-RULE 使用
+#                                               google.com(not match)--> baidu.com(match)
+#                                                /                                ｜
+#                                               /                                 ｜
+#  https://baidu.com  --> rule1 --> rule2 --> sub-rule-name1(match tcp)          使用 DIRECT
+#
+#
+#                                              google.com(not match)--> baidu.com(not match)
+#                                                /                            ｜
+#                                               /                             ｜
+#  dns 1.1.1.1  --> rule1 --> rule2 --> sub-rule-name1(match udp)         sub-rule-name2(match udp)
+#                                                                             ｜
+#                                                                             ｜
+#                                                                 使用 REJECT <-- 1.1.1.1/32(match)
+#
+
+sub-rules:
+  sub-rule-name1:
+    - DOMAIN,google.com,ss1
+    - DOMAIN,baidu.com,DIRECT
+  sub-rule-name2:
+    - IP-CIDR,1.1.1.1/32,REJECT
+    - IP-CIDR,8.8.8.8/32,ss1
+    - DOMAIN,dns.alidns.com,REJECT

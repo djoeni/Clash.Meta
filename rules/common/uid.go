@@ -13,7 +13,7 @@ import (
 
 type Uid struct {
 	*Base
-	uids    []utils.Range[int32]
+	uids    []utils.Range[uint32]
 	oUid    string
 	adapter string
 }
@@ -26,7 +26,7 @@ func NewUid(oUid, adapter string) (*Uid, error) {
 		return nil, fmt.Errorf("uid rule not support this platform")
 	}
 
-	var uidRange []utils.Range[int32]
+	var uidRange []utils.Range[uint32]
 	for _, u := range strings.Split(oUid, "/") {
 		if u == "" {
 			continue
@@ -45,14 +45,14 @@ func NewUid(oUid, adapter string) (*Uid, error) {
 
 		switch subUidsLen {
 		case 1:
-			uidRange = append(uidRange, *utils.NewRange(int32(uidStart), int32(uidStart)))
+			uidRange = append(uidRange, *utils.NewRange(uint32(uidStart), uint32(uidStart)))
 		case 2:
 			uidEnd, err := strconv.ParseUint(strings.Trim(subUids[1], "[ ]"), 10, 32)
 			if err != nil {
 				return nil, errPayload
 			}
 
-			uidRange = append(uidRange, *utils.NewRange(int32(uidStart), int32(uidEnd)))
+			uidRange = append(uidRange, *utils.NewRange(uint32(uidStart), uint32(uidEnd)))
 		}
 	}
 
@@ -71,27 +71,29 @@ func (u *Uid) RuleType() C.RuleType {
 	return C.Uid
 }
 
-func (u *Uid) Match(metadata *C.Metadata) bool {
+func (u *Uid) Match(metadata *C.Metadata) (bool, string) {
 	srcPort, err := strconv.ParseUint(metadata.SrcPort, 10, 16)
 	if err != nil {
-		return false
+		return false, ""
 	}
-	var uid int32
+	var uid *uint32
 	if metadata.Uid != nil {
-		uid = *metadata.Uid
+		uid = metadata.Uid
 	} else if uid, err = process.FindUid(metadata.NetWork.String(), metadata.SrcIP, int(srcPort)); err == nil {
-		metadata.Uid = &uid
+		metadata.Uid = uid
 	} else {
 		log.Warnln("[UID] could not get uid from %s", metadata.String())
-		return false
+		return false, ""
 	}
 
-	for _, _uid := range u.uids {
-		if _uid.Contains(uid) {
-			return true
+	if uid != nil {
+		for _, _uid := range u.uids {
+			if _uid.Contains(*uid) {
+				return true, u.adapter
+			}
 		}
 	}
-	return false
+	return false, ""
 }
 
 func (u *Uid) Adapter() string {

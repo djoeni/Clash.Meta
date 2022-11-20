@@ -153,11 +153,11 @@ func (r *Relay) proxies(metadata *C.Metadata, touch bool) ([]C.Proxy, []C.Proxy)
 	for n, proxy := range rawProxies {
 		proxies = append(proxies, proxy)
 		chainProxies = append(chainProxies, proxy)
-		subproxy := proxy.Unwrap(metadata)
+		subproxy := proxy.Unwrap(metadata, touch)
 		for subproxy != nil {
 			chainProxies = append(chainProxies, subproxy)
 			proxies[n] = subproxy
-			subproxy = subproxy.Unwrap(metadata)
+			subproxy = subproxy.Unwrap(metadata, touch)
 		}
 	}
 
@@ -184,6 +184,7 @@ func NewRelay(option *GroupCommonOption, providers []provider.ProxyProvider) *Re
 				Interface:   option.Interface,
 				RoutingMark: option.RoutingMark,
 			},
+			"",
 			"",
 			providers,
 		}),

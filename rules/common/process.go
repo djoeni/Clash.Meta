@@ -14,15 +14,19 @@ type Process struct {
 }
 
 func (ps *Process) RuleType() C.RuleType {
-	return C.Process
-}
-
-func (ps *Process) Match(metadata *C.Metadata) bool {
 	if ps.nameOnly {
-		return strings.EqualFold(metadata.Process, ps.process)
+		return C.Process
 	}
 
-	return strings.EqualFold(metadata.ProcessPath, ps.process)
+	return C.ProcessPath
+}
+
+func (ps *Process) Match(metadata *C.Metadata) (bool, string) {
+	if ps.nameOnly {
+		return strings.EqualFold(metadata.Process, ps.process), ps.adapter
+	}
+
+	return strings.EqualFold(metadata.ProcessPath, ps.process), ps.adapter
 }
 
 func (ps *Process) Adapter() string {

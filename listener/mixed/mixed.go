@@ -1,10 +1,8 @@
 package mixed
 
 import (
-	"context"
-	"github.com/database64128/tfo-go"
+	"github.com/Dreamacro/clash/adapter/inbound"
 	"net"
-	"time"
 
 	"github.com/Dreamacro/clash/common/cache"
 	N "github.com/Dreamacro/clash/common/net"
@@ -18,8 +16,9 @@ import (
 type Listener struct {
 	listener net.Listener
 	addr     string
-	cache    *cache.Cache[string, bool]
-	closed   bool
+
+	cache  *cache.LruCache[string, bool]
+	closed bool
 }
 
 // RawAddress implements C.Listener
@@ -38,11 +37,8 @@ func (l *Listener) Close() error {
 	return l.listener.Close()
 }
 
-func New(addr string, inboundTfo bool, in chan<- C.ConnContext) (*Listener, error) {
-	lc := tfo.ListenConfig{
-		DisableTFO: !inboundTfo,
-	}
-	l, err := lc.Listen(context.Background(), "tcp", addr)
+func New(addr string, in chan<- C.ConnContext) (*Listener, error) {
+	l, err := inbound.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +46,7 @@ func New(addr string, inboundTfo bool, in chan<- C.ConnContext) (*Listener, erro
 	ml := &Listener{
 		listener: l,
 		addr:     addr,
-		cache:    cache.New[string, bool](30 * time.Second),
+		cache:    cache.New[string, bool](cache.WithAge[string, bool](30)),
 	}
 	go func() {
 		for {
@@ -68,7 +64,7 @@ func New(addr string, inboundTfo bool, in chan<- C.ConnContext) (*Listener, erro
 	return ml, nil
 }
 
-func handleConn(conn net.Conn, in chan<- C.ConnContext, cache *cache.Cache[string, bool]) {
+func handleConn(conn net.Conn, in chan<- C.ConnContext, cache *cache.LruCache[string, bool]) {
 	conn.(*net.TCPConn).SetKeepAlive(true)
 
 	bufConn := N.NewBufferedConn(conn)

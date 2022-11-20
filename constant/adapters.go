@@ -31,6 +31,7 @@ const (
 	Vless
 	Trojan
 	Hysteria
+	WireGuard
 )
 
 const (
@@ -106,12 +107,13 @@ type ProxyAdapter interface {
 	ListenPacketOnStreamConn(c net.Conn, metadata *Metadata) (PacketConn, error)
 
 	// Unwrap extracts the proxy from a proxy-group. It returns nil when nothing to extract.
-	Unwrap(metadata *Metadata) Proxy
+	Unwrap(metadata *Metadata, touch bool) Proxy
 }
 
 type Group interface {
 	URLTest(ctx context.Context, url string) (mp map[string]uint16, err error)
 	GetProxies(touch bool) []Proxy
+	Touch()
 }
 
 type DelayHistory struct {
@@ -164,6 +166,8 @@ func (at AdapterType) String() string {
 		return "Trojan"
 	case Hysteria:
 		return "Hysteria"
+	case WireGuard:
+		return "WireGuard"
 
 	case Relay:
 		return "Relay"
@@ -197,4 +201,8 @@ type UDPPacket interface {
 
 	// LocalAddr returns the source IP/Port of packet
 	LocalAddr() net.Addr
+}
+
+type UDPPacketInAddr interface {
+	InAddr() net.Addr
 }

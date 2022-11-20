@@ -158,15 +158,15 @@ func dualStackDialContext(ctx context.Context, network, address string, opt *opt
 		var ip netip.Addr
 		if ipv6 {
 			if !direct {
-				ip, result.error = resolver.ResolveIPv6ProxyServerHost(host)
+				ip, result.error = resolver.ResolveIPv6ProxyServerHost(ctx, host)
 			} else {
-				ip, result.error = resolver.ResolveIPv6(host)
+				ip, result.error = resolver.ResolveIPv6(ctx, host)
 			}
 		} else {
 			if !direct {
-				ip, result.error = resolver.ResolveIPv4ProxyServerHost(host)
+				ip, result.error = resolver.ResolveIPv4ProxyServerHost(ctx, host)
 			} else {
-				ip, result.error = resolver.ResolveIPv4(host)
+				ip, result.error = resolver.ResolveIPv4(ctx, host)
 			}
 		}
 		if result.error != nil {
@@ -204,11 +204,17 @@ func dualStackDialContext(ctx context.Context, network, address string, opt *opt
 				}
 			}
 		case <-ctx.Done():
+			err=ctx.Err()
 			break
 		}
 	}
 
-	return nil, errors.New("dual stack tcp shake hands failed")
+	if err==nil {
+		err=fmt.Errorf("dual stack dial failed")
+	}else{
+		err=fmt.Errorf("dual stack dial failed:%w",err)
+	}
+	return nil, err
 }
 
 func concurrentDualStackDialContext(ctx context.Context, network, address string, opt *option) (net.Conn, error) {
@@ -219,9 +225,9 @@ func concurrentDualStackDialContext(ctx context.Context, network, address string
 
 	var ips []netip.Addr
 	if opt.direct {
-		ips, err = resolver.ResolveAllIP(host)
+		ips, err = resolver.LookupIP(ctx, host)
 	} else {
-		ips, err = resolver.ResolveAllIPProxyServerHost(host)
+		ips, err = resolver.LookupIPProxyServerHost(ctx, host)
 	}
 
 	if err != nil {
@@ -290,6 +296,8 @@ func concurrentDialContext(ctx context.Context, network string, ips []netip.Addr
 
 	connCount := len(ips)
 	var fallback dialResult
+	var primaryError error
+	var finalError error
 	for i := 0; i < connCount; i++ {
 		select {
 		case res := <-results:
@@ -303,6 +311,7 @@ func concurrentDialContext(ctx context.Context, network string, ips []netip.Addr
 				}
 			} else {
 				if res.isPrimary {
+					primaryError = res.error
 					preferCount.Add(-1)
 					if preferCount.Load() == 0 && fallback.done && fallback.error == nil {
 						return fallback.Conn, nil
@@ -313,6 +322,7 @@ func concurrentDialContext(ctx context.Context, network string, ips []netip.Addr
 			if fallback.done && fallback.error == nil {
 				return fallback.Conn, nil
 			}
+			finalError=ctx.Err()
 			break
 		}
 	}
@@ -321,7 +331,21 @@ func concurrentDialContext(ctx context.Context, network string, ips []netip.Addr
 		return fallback.Conn, nil
 	}
 
-	return nil, fmt.Errorf("all ips %v tcp shake hands failed", ips)
+	if primaryError != nil {
+		return nil, primaryError
+	}
+
+	if fallback.error != nil {
+		return nil, fallback.error
+	}
+
+	if finalError==nil {
+		finalError=fmt.Errorf("all ips %v tcp shake hands failed", ips)
+	}else{
+		finalError=fmt.Errorf("concurrent dial failed:%w",finalError)
+	}
+
+	return nil, finalError
 }
 
 func singleDialContext(ctx context.Context, network string, address string, opt *option) (net.Conn, error) {
@@ -334,15 +358,15 @@ func singleDialContext(ctx context.Context, network string, address string, opt 
 	switch network {
 	case "tcp4", "udp4":
 		if !opt.direct {
-			ip, err = resolver.ResolveIPv4ProxyServerHost(host)
+			ip, err = resolver.ResolveIPv4ProxyServerHost(ctx, host)
 		} else {
-			ip, err = resolver.ResolveIPv4(host)
+			ip, err = resolver.ResolveIPv4(ctx, host)
 		}
 	default:
 		if !opt.direct {
-			ip, err = resolver.ResolveIPv6ProxyServerHost(host)
+			ip, err = resolver.ResolveIPv6ProxyServerHost(ctx, host)
 		} else {
-			ip, err = resolver.ResolveIPv6(host)
+			ip, err = resolver.ResolveIPv6(ctx, host)
 		}
 	}
 	if err != nil {
@@ -369,9 +393,9 @@ func concurrentIPv4DialContext(ctx context.Context, network, address string, opt
 
 	var ips []netip.Addr
 	if !opt.direct {
-		ips, err = resolver.ResolveAllIPv4ProxyServerHost(host)
+		ips, err = resolver.LookupIPv4ProxyServerHost(ctx, host)
 	} else {
-		ips, err = resolver.ResolveAllIPv4(host)
+		ips, err = resolver.LookupIPv4(ctx, host)
 	}
 
 	if err != nil {
@@ -389,9 +413,9 @@ func concurrentIPv6DialContext(ctx context.Context, network, address string, opt
 
 	var ips []netip.Addr
 	if !opt.direct {
-		ips, err = resolver.ResolveAllIPv6ProxyServerHost(host)
+		ips, err = resolver.LookupIPv6ProxyServerHost(ctx, host)
 	} else {
-		ips, err = resolver.ResolveAllIPv6(host)
+		ips, err = resolver.LookupIPv6(ctx, host)
 	}
 
 	if err != nil {

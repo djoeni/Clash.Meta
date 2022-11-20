@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -11,12 +12,18 @@ import (
 
 	"github.com/Dreamacro/clash/common/cache"
 	"github.com/Dreamacro/clash/common/nnip"
+	"github.com/Dreamacro/clash/common/picker"
 	"github.com/Dreamacro/clash/component/dialer"
+	"github.com/Dreamacro/clash/component/resolver"
 	C "github.com/Dreamacro/clash/constant"
 	"github.com/Dreamacro/clash/log"
 	"github.com/Dreamacro/clash/tunnel"
 
 	D "github.com/miekg/dns"
+)
+
+const (
+	MaxMsgSize = 65535
 )
 
 func putMsgToCache(c *cache.LruCache[string, *D.Msg], key string, msg *D.Msg) {
@@ -59,13 +66,17 @@ func transform(servers []NameServer, resolver *Resolver) []dnsClient {
 	for _, s := range servers {
 		switch s.Net {
 		case "https":
-			ret = append(ret, newDoHClient(s.Addr, resolver, s.Params, s.ProxyAdapter))
+			ret = append(ret, newDoHClient(s.Addr, resolver, s.PreferH3, s.Params, s.ProxyAdapter))
 			continue
 		case "dhcp":
 			ret = append(ret, newDHCPClient(s.Addr))
 			continue
 		case "quic":
-			ret = append(ret, newDOQ(resolver, s.Addr, s.ProxyAdapter))
+			if doq, err := newDoQ(resolver, s.Addr, s.ProxyAdapter); err == nil {
+				ret = append(ret, doq)
+			} else {
+				log.Fatalln("DoQ format error: %v", err)
+			}
 			continue
 		}
 
@@ -156,17 +167,11 @@ func dialContextExtra(ctx context.Context, adapterName string, network string, d
 		networkType = C.UDP
 	}
 
-	addrType := C.AtypIPv4
-	if dstIP.Is6() {
-		addrType = C.AtypIPv6
-	}
-
 	metadata := &C.Metadata{
-		NetWork:  networkType,
-		AddrType: addrType,
-		Host:     "",
-		DstIP:    dstIP,
-		DstPort:  port,
+		NetWork: networkType,
+		Host:    "",
+		DstIP:   dstIP,
+		DstPort: port,
 	}
 
 	adapter, ok := tunnel.Proxies()[adapterName]
@@ -205,4 +210,32 @@ func dialContextExtra(ctx context.Context, adapterName string, network string, d
 	}
 
 	return adapter.DialContext(ctx, metadata, opts...)
+}
+
+func batchExchange(ctx context.Context, clients []dnsClient, m *D.Msg) (msg *D.Msg, err error) {
+	fast, ctx := picker.WithTimeout[*D.Msg](ctx, resolver.DefaultDNSTimeout)
+	for _, client := range clients {
+		r := client
+		fast.Go(func() (*D.Msg, error) {
+			m, err := r.ExchangeContext(ctx, m)
+			if err != nil {
+				return nil, err
+			} else if m.Rcode == D.RcodeServerFailure || m.Rcode == D.RcodeRefused {
+				return nil, errors.New("server failure")
+			}
+			return m, nil
+		})
+	}
+
+	elm := fast.Wait()
+	if elm == nil {
+		err := errors.New("all DNS requests failed")
+		if fErr := fast.Error(); fErr != nil {
+			err = fmt.Errorf("%w, first error: %s", err, fErr.Error())
+		}
+		return nil, err
+	}
+
+	msg = elm
+	return
 }

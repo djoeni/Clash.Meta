@@ -2,10 +2,9 @@ package config
 
 import (
 	"container/list"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Dreamacro/clash/constant/sniffer"
-	"github.com/Dreamacro/clash/listener/tun/ipstack/commons"
 	"net"
 	"net/netip"
 	"net/url"
@@ -31,6 +30,7 @@ import (
 	"github.com/Dreamacro/clash/component/trie"
 	C "github.com/Dreamacro/clash/constant"
 	providerTypes "github.com/Dreamacro/clash/constant/provider"
+	"github.com/Dreamacro/clash/constant/sniffer"
 	snifferTypes "github.com/Dreamacro/clash/constant/sniffer"
 	"github.com/Dreamacro/clash/dns"
 	"github.com/Dreamacro/clash/log"
@@ -60,15 +60,19 @@ type General struct {
 
 // Inbound config
 type Inbound struct {
-	Port           int      `json:"port"`
-	SocksPort      int      `json:"socks-port"`
-	RedirPort      int      `json:"redir-port"`
-	TProxyPort     int      `json:"tproxy-port"`
-	MixedPort      int      `json:"mixed-port"`
-	Authentication []string `json:"authentication"`
-	AllowLan       bool     `json:"allow-lan"`
-	BindAddress    string   `json:"bind-address"`
-	InboundTfo     bool     `json:"inbound-tfo"`
+	Port              int      `json:"port"`
+	SocksPort         int      `json:"socks-port"`
+	RedirPort         int      `json:"redir-port"`
+	TProxyPort        int      `json:"tproxy-port"`
+	MixedPort         int      `json:"mixed-port"`
+	ShadowSocksConfig string   `json:"ss-config"`
+	VmessConfig       string   `json:"vmess-config"`
+	TcpTunConfig      string   `json:"tcptun-config"`
+	UdpTunConfig      string   `json:"udptun-config"`
+	Authentication    []string `json:"authentication"`
+	AllowLan          bool     `json:"allow-lan"`
+	BindAddress       string   `json:"bind-address"`
+	InboundTfo        bool     `json:"inbound-tfo"`
 }
 
 // Controller config
@@ -118,8 +122,73 @@ type Tun struct {
 	DNSHijack           []netip.AddrPort `yaml:"dns-hijack" json:"dns-hijack"`
 	AutoRoute           bool             `yaml:"auto-route" json:"auto-route"`
 	AutoDetectInterface bool             `yaml:"auto-detect-interface" json:"auto-detect-interface"`
-	TunAddressPrefix    netip.Prefix     `yaml:"-" json:"-"`
 	RedirectToTun       []string         `yaml:"-" json:"-"`
+
+	MTU                    uint32         `yaml:"mtu" json:"mtu,omitempty"`
+	Inet4Address           []ListenPrefix `yaml:"inet4-address" json:"inet4-address,omitempty"`
+	Inet6Address           []ListenPrefix `yaml:"inet6-address" json:"inet6-address,omitempty"`
+	StrictRoute            bool           `yaml:"strict-route" json:"strict-route,omitempty"`
+	Inet4RouteAddress      []ListenPrefix `yaml:"inet4-route-address" json:"inet4-route-address,omitempty"`
+	Inet6RouteAddress      []ListenPrefix `yaml:"inet6-route-address" json:"inet6-route-address,omitempty"`
+	IncludeUID             []uint32       `yaml:"include-uid" json:"include-uid,omitempty"`
+	IncludeUIDRange        []string       `yaml:"include-uid-range" json:"include-uid-range,omitempty"`
+	ExcludeUID             []uint32       `yaml:"exclude-uid" json:"exclude-uid,omitempty"`
+	ExcludeUIDRange        []string       `yaml:"exclude-uid-range" json:"exclude-uid-range,omitempty"`
+	IncludeAndroidUser     []int          `yaml:"include-android-user" json:"include-android-user,omitempty"`
+	IncludePackage         []string       `yaml:"include-package" json:"include-package,omitempty"`
+	ExcludePackage         []string       `yaml:"exclude-package" json:"exclude-package,omitempty"`
+	EndpointIndependentNat bool           `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
+	UDPTimeout             int64          `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
+}
+
+type ListenPrefix netip.Prefix
+
+func (p ListenPrefix) MarshalJSON() ([]byte, error) {
+	prefix := netip.Prefix(p)
+	if !prefix.IsValid() {
+		return json.Marshal(nil)
+	}
+	return json.Marshal(prefix.String())
+}
+
+func (p ListenPrefix) MarshalYAML() (interface{}, error) {
+	prefix := netip.Prefix(p)
+	if !prefix.IsValid() {
+		return nil, nil
+	}
+	return prefix.String(), nil
+}
+
+func (p *ListenPrefix) UnmarshalJSON(bytes []byte) error {
+	var value string
+	err := json.Unmarshal(bytes, &value)
+	if err != nil {
+		return err
+	}
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil {
+		return err
+	}
+	*p = ListenPrefix(prefix)
+	return nil
+}
+
+func (p *ListenPrefix) UnmarshalYAML(node *yaml.Node) error {
+	var value string
+	err := node.Decode(&value)
+	if err != nil {
+		return err
+	}
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil {
+		return err
+	}
+	*p = ListenPrefix(prefix)
+	return nil
+}
+
+func (p ListenPrefix) Build() netip.Prefix {
+	return netip.Prefix(p)
 }
 
 // IPTables config
@@ -130,12 +199,14 @@ type IPTables struct {
 }
 
 type Sniffer struct {
-	Enable      bool
-	Sniffers    []sniffer.Type
-	Reverses    *trie.DomainTrie[bool]
-	ForceDomain *trie.DomainTrie[bool]
-	SkipDomain  *trie.DomainTrie[bool]
-	Ports       *[]utils.Range[uint16]
+	Enable          bool
+	Sniffers        []sniffer.Type
+	Reverses        *trie.DomainTrie[struct{}]
+	ForceDomain     *trie.DomainTrie[struct{}]
+	SkipDomain      *trie.DomainTrie[struct{}]
+	Ports           *[]utils.Range[uint16]
+	ForceDnsMapping bool
+	ParsePureIp     bool
 }
 
 // Experimental config
@@ -146,13 +217,13 @@ type Experimental struct {
 // Config is clash config manager
 type Config struct {
 	General       *General
-	Tun           *Tun
 	IPTables      *IPTables
 	DNS           *DNS
 	Experimental  *Experimental
 	Hosts         *trie.DomainTrie[netip.Addr]
 	Profile       *Profile
 	Rules         []C.Rule
+	SubRules      *map[string][]C.Rule
 	Users         []auth.AuthUser
 	Proxies       map[string]C.Proxy
 	Providers     map[string]providerTypes.ProxyProvider
@@ -193,6 +264,22 @@ type RawTun struct {
 	AutoRoute           bool       `yaml:"auto-route" json:"auto-route"`
 	AutoDetectInterface bool       `yaml:"auto-detect-interface"`
 	RedirectToTun       []string   `yaml:"-" json:"-"`
+
+	MTU uint32 `yaml:"mtu" json:"mtu,omitempty"`
+	//Inet4Address           []ListenPrefix `yaml:"inet4-address" json:"inet4_address,omitempty"`
+	Inet6Address           []ListenPrefix `yaml:"inet6-address" json:"inet6_address,omitempty"`
+	StrictRoute            bool           `yaml:"strict-route" json:"strict_route,omitempty"`
+	Inet4RouteAddress      []ListenPrefix `yaml:"inet4_route_address" json:"inet4_route_address,omitempty"`
+	Inet6RouteAddress      []ListenPrefix `yaml:"inet6_route_address" json:"inet6_route_address,omitempty"`
+	IncludeUID             []uint32       `yaml:"include-uid" json:"include_uid,omitempty"`
+	IncludeUIDRange        []string       `yaml:"include-uid-range" json:"include_uid_range,omitempty"`
+	ExcludeUID             []uint32       `yaml:"exclude-uid" json:"exclude_uid,omitempty"`
+	ExcludeUIDRange        []string       `yaml:"exclude-uid-range" json:"exclude_uid_range,omitempty"`
+	IncludeAndroidUser     []int          `yaml:"include-android-user" json:"include_android_user,omitempty"`
+	IncludePackage         []string       `yaml:"include-package" json:"include_package,omitempty"`
+	ExcludePackage         []string       `yaml:"exclude-package" json:"exclude_package,omitempty"`
+	EndpointIndependentNat bool           `yaml:"endpoint-independent-nat" json:"endpoint_independent_nat,omitempty"`
+	UDPTimeout             int64          `yaml:"udp-timeout" json:"udp_timeout,omitempty"`
 }
 
 type RawConfig struct {
@@ -201,6 +288,10 @@ type RawConfig struct {
 	RedirPort          int          `yaml:"redir-port"`
 	TProxyPort         int          `yaml:"tproxy-port"`
 	MixedPort          int          `yaml:"mixed-port"`
+	ShadowSocksConfig  string       `yaml:"ss-config"`
+	VmessConfig        string       `yaml:"vmess-config"`
+	TcpTunConfig       string       `yaml:"tcptun-config"`
+	UdpTunConfig       string       `yaml:"udptun-config"`
 	InboundTfo         bool         `yaml:"inbound-tfo"`
 	Authentication     []string     `yaml:"authentication"`
 	AllowLan           bool         `yaml:"allow-lan"`
@@ -233,6 +324,7 @@ type RawConfig struct {
 	Proxy         []map[string]any          `yaml:"proxies"`
 	ProxyGroup    []map[string]any          `yaml:"proxy-groups"`
 	Rule          []string                  `yaml:"rules"`
+	SubRules      map[string][]string       `yaml:"sub-rules"`
 }
 
 type RawGeoXUrl struct {
@@ -242,11 +334,13 @@ type RawGeoXUrl struct {
 }
 
 type RawSniffer struct {
-	Enable      bool     `yaml:"enable" json:"enable"`
-	Sniffing    []string `yaml:"sniffing" json:"sniffing"`
-	ForceDomain []string `yaml:"force-domain" json:"force-domain"`
-	SkipDomain  []string `yaml:"skip-domain" json:"skip-domain"`
-	Ports       []string `yaml:"port-whitelist" json:"port-whitelist"`
+	Enable          bool     `yaml:"enable" json:"enable"`
+	Sniffing        []string `yaml:"sniffing" json:"sniffing"`
+	ForceDomain     []string `yaml:"force-domain" json:"force-domain"`
+	SkipDomain      []string `yaml:"skip-domain" json:"skip-domain"`
+	Ports           []string `yaml:"port-whitelist" json:"port-whitelist"`
+	ForceDnsMapping bool     `yaml:"force-dns-mapping" json:"force-dns-mapping"`
+	ParsePureIp     bool     `yaml:"parse-pure-ip" json:"parse-pure-ip"`
 }
 
 // EBpf config
@@ -294,8 +388,9 @@ func UnmarshalRawConfig(buf []byte) (*RawConfig, error) {
 			Device:              "",
 			Stack:               C.TunGvisor,
 			DNSHijack:           []string{"0.0.0.0:53"}, // default hijack all dns query
-			AutoRoute:           false,
-			AutoDetectInterface: false,
+			AutoRoute:           true,
+			AutoDetectInterface: true,
+			Inet6Address:        []ListenPrefix{ListenPrefix(netip.MustParsePrefix("fdfe:dcba:9876::1/126"))},
 		},
 		EBpf: EBpf{
 			RedirectToTun: []string{},
@@ -335,11 +430,13 @@ func UnmarshalRawConfig(buf []byte) (*RawConfig, error) {
 			},
 		},
 		Sniffer: RawSniffer{
-			Enable:      false,
-			Sniffing:    []string{},
-			ForceDomain: []string{},
-			SkipDomain:  []string{},
-			Ports:       []string{},
+			Enable:          false,
+			Sniffing:        []string{},
+			ForceDomain:     []string{},
+			SkipDomain:      []string{},
+			Ports:           []string{},
+			ForceDnsMapping: true,
+			ParsePureIp:     true,
 		},
 		Profile: Profile{
 			StoreSelected: true,
@@ -381,12 +478,18 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	config.Proxies = proxies
 	config.Providers = providers
 
-	rules, ruleProviders, err := parseRules(rawCfg, proxies)
+	subRules, ruleProviders, err := parseSubRules(rawCfg, proxies)
+	if err != nil {
+		return nil, err
+	}
+	config.SubRules = subRules
+	config.RuleProviders = ruleProviders
+
+	rules, err := parseRules(rawCfg, proxies, subRules)
 	if err != nil {
 		return nil, err
 	}
 	config.Rules = rules
-	config.RuleProviders = ruleProviders
 
 	hosts, err := parseHosts(rawCfg)
 	if err != nil {
@@ -400,11 +503,10 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	}
 	config.DNS = dnsCfg
 
-	tunCfg, err := parseTun(rawCfg.Tun, config.General, dnsCfg)
+	err = parseTun(rawCfg.Tun, config.General)
 	if err != nil {
 		return nil, err
 	}
-	config.Tun = tunCfg
 
 	config.Users = parseAuthentication(rawCfg.Authentication)
 
@@ -432,14 +534,18 @@ func parseGeneral(cfg *RawConfig) (*General, error) {
 	cfg.Tun.RedirectToTun = cfg.EBpf.RedirectToTun
 	return &General{
 		Inbound: Inbound{
-			Port:        cfg.Port,
-			SocksPort:   cfg.SocksPort,
-			RedirPort:   cfg.RedirPort,
-			TProxyPort:  cfg.TProxyPort,
-			MixedPort:   cfg.MixedPort,
-			AllowLan:    cfg.AllowLan,
-			BindAddress: cfg.BindAddress,
-			InboundTfo:  cfg.InboundTfo,
+			Port:              cfg.Port,
+			SocksPort:         cfg.SocksPort,
+			RedirPort:         cfg.RedirPort,
+			TProxyPort:        cfg.TProxyPort,
+			MixedPort:         cfg.MixedPort,
+			ShadowSocksConfig: cfg.ShadowSocksConfig,
+			VmessConfig:       cfg.VmessConfig,
+			TcpTunConfig:      cfg.TcpTunConfig,
+			UdpTunConfig:      cfg.UdpTunConfig,
+			AllowLan:          cfg.AllowLan,
+			BindAddress:       cfg.BindAddress,
+			InboundTfo:        cfg.InboundTfo,
 		},
 		Controller: Controller{
 			ExternalController: cfg.ExternalController,
@@ -563,8 +669,9 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	return proxies, providersMap, nil
 }
 
-func parseRules(cfg *RawConfig, proxies map[string]C.Proxy) ([]C.Rule, map[string]providerTypes.RuleProvider, error) {
-	ruleProviders := map[string]providerTypes.RuleProvider{}
+func parseSubRules(cfg *RawConfig, proxies map[string]C.Proxy) (subRules *map[string][]C.Rule, ruleProviders map[string]providerTypes.RuleProvider, err error) {
+	ruleProviders = map[string]providerTypes.RuleProvider{}
+	subRules = &map[string][]C.Rule{}
 	log.Infoln("Geodata Loader mode: %s", geodata.LoaderName())
 	// parse rule provider
 	for name, mapping := range cfg.RuleProvider {
@@ -577,6 +684,102 @@ func parseRules(cfg *RawConfig, proxies map[string]C.Proxy) ([]C.Rule, map[strin
 		RP.SetRuleProvider(rp)
 	}
 
+	for name, rawRules := range cfg.SubRules {
+		var rules []C.Rule
+		for idx, line := range rawRules {
+			rawRule := trimArr(strings.Split(line, ","))
+			var (
+				payload  string
+				target   string
+				params   []string
+				ruleName = strings.ToUpper(rawRule[0])
+			)
+
+			l := len(rawRule)
+
+			if ruleName == "NOT" || ruleName == "OR" || ruleName == "AND" || ruleName == "SUB-RULE" {
+				target = rawRule[l-1]
+				payload = strings.Join(rawRule[1:l-1], ",")
+			} else {
+				if l < 2 {
+					return nil, nil, fmt.Errorf("sub-rules[%d] [%s] error: format invalid", idx, line)
+				}
+				if l < 4 {
+					rawRule = append(rawRule, make([]string, 4-l)...)
+				}
+				if ruleName == "MATCH" {
+					l = 2
+				}
+				if l >= 3 {
+					l = 3
+					payload = rawRule[1]
+				}
+				target = rawRule[l-1]
+				params = rawRule[l:]
+			}
+
+			if _, ok := proxies[target]; !ok && ruleName != "SUB-RULE" {
+				return nil, nil, fmt.Errorf("sub-rules[%d:%s] [%s] error: proxy [%s] not found", idx, name, line, target)
+			}
+
+			params = trimArr(params)
+			parsed, parseErr := R.ParseRule(ruleName, payload, target, params, subRules)
+			if parseErr != nil {
+				return nil, nil, fmt.Errorf("sub-rules[%d] [%s] error: %s", idx, line, parseErr.Error())
+			}
+
+			rules = append(rules, parsed)
+		}
+		(*subRules)[name] = rules
+	}
+
+	if err = verifySubRule(subRules); err != nil {
+		return nil, nil, err
+	}
+
+	return
+}
+
+func verifySubRule(subRules *map[string][]C.Rule) error {
+	for name := range *subRules {
+		err := verifySubRuleCircularReferences(name, subRules, []string{})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func verifySubRuleCircularReferences(n string, subRules *map[string][]C.Rule, arr []string) error {
+	isInArray := func(v string, array []string) bool {
+		for _, c := range array {
+			if v == c {
+				return true
+			}
+		}
+		return false
+	}
+
+	arr = append(arr, n)
+	for i, rule := range (*subRules)[n] {
+		if rule.RuleType() == C.SubRules {
+			if _, ok := (*subRules)[rule.Adapter()]; !ok {
+				return fmt.Errorf("sub-rule[%d:%s] error: [%s] not found", i, n, rule.Adapter())
+			}
+			if isInArray(rule.Adapter(), arr) {
+				arr = append(arr, rule.Adapter())
+				return fmt.Errorf("sub-rule error: circular references [%s]", strings.Join(arr, "->"))
+			}
+
+			if err := verifySubRuleCircularReferences(rule.Adapter(), subRules, arr); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func parseRules(cfg *RawConfig, proxies map[string]C.Proxy, subRules *map[string][]C.Rule) ([]C.Rule, error) {
 	var rules []C.Rule
 	rulesConfig := cfg.Rule
 
@@ -592,12 +795,12 @@ func parseRules(cfg *RawConfig, proxies map[string]C.Proxy) ([]C.Rule, map[strin
 
 		l := len(rule)
 
-		if ruleName == "NOT" || ruleName == "OR" || ruleName == "AND" {
+		if ruleName == "NOT" || ruleName == "OR" || ruleName == "AND" || ruleName == "SUB-RULE" {
 			target = rule[l-1]
 			payload = strings.Join(rule[1:l-1], ",")
 		} else {
 			if l < 2 {
-				return nil, nil, fmt.Errorf("rules[%d] [%s] error: format invalid", idx, line)
+				return nil, fmt.Errorf("rules[%d] [%s] error: format invalid", idx, line)
 			}
 			if l < 4 {
 				rule = append(rule, make([]string, 4-l)...)
@@ -612,15 +815,18 @@ func parseRules(cfg *RawConfig, proxies map[string]C.Proxy) ([]C.Rule, map[strin
 			target = rule[l-1]
 			params = rule[l:]
 		}
-
 		if _, ok := proxies[target]; !ok {
-			return nil, nil, fmt.Errorf("rules[%d] [%s] error: proxy [%s] not found", idx, line, target)
+			if ruleName != "SUB-RULE" {
+				return nil, fmt.Errorf("rules[%d] [%s] error: proxy [%s] not found", idx, line, target)
+			} else if _, ok = (*subRules)[target]; !ok {
+				return nil, fmt.Errorf("rules[%d] [%s] error: sub-rule [%s] not found", idx, line, target)
+			}
 		}
 
 		params = trimArr(params)
-		parsed, parseErr := R.ParseRule(ruleName, payload, target, params)
+		parsed, parseErr := R.ParseRule(ruleName, payload, target, params, subRules)
 		if parseErr != nil {
-			return nil, nil, fmt.Errorf("rules[%d] [%s] error: %s", idx, line, parseErr.Error())
+			return nil, fmt.Errorf("rules[%d] [%s] error: %s", idx, line, parseErr.Error())
 		}
 
 		rules = append(rules, parsed)
@@ -628,7 +834,7 @@ func parseRules(cfg *RawConfig, proxies map[string]C.Proxy) ([]C.Rule, map[strin
 
 	runtime.GC()
 
-	return rules, ruleProviders, nil
+	return rules, nil
 }
 
 func parseHosts(cfg *RawConfig) (*trie.DomainTrie[netip.Addr], error) {
@@ -669,7 +875,7 @@ func hostWithDefaultPort(host string, defPort string) (string, error) {
 	return net.JoinHostPort(hostname, port), nil
 }
 
-func parseNameServer(servers []string) ([]dns.NameServer, error) {
+func parseNameServer(servers []string, preferH3 bool) ([]dns.NameServer, error) {
 	var nameservers []dns.NameServer
 
 	for idx, server := range servers {
@@ -695,7 +901,15 @@ func parseNameServer(servers []string) ([]dns.NameServer, error) {
 			addr, err = hostWithDefaultPort(u.Host, "853")
 			dnsNetType = "tcp-tls" // DNS over TLS
 		case "https":
-			clearURL := url.URL{Scheme: "https", Host: u.Host, Path: u.Path}
+			host := u.Host
+			if _, _, err := net.SplitHostPort(host); err != nil && strings.Contains(err.Error(), "missing port in address") {
+				host = net.JoinHostPort(host, "443")
+			} else {
+				if err!=nil{
+					return nil,err
+				}
+			}
+			clearURL := url.URL{Scheme: "https", Host: host, Path: u.Path}
 			addr = clearURL.String()
 			dnsNetType = "https" // DNS over HTTPS
 			if len(u.Fragment) != 0 {
@@ -734,17 +948,18 @@ func parseNameServer(servers []string) ([]dns.NameServer, error) {
 				ProxyAdapter: proxyAdapter,
 				Interface:    dialer.DefaultInterface,
 				Params:       params,
+				PreferH3:     preferH3,
 			},
 		)
 	}
 	return nameservers, nil
 }
 
-func parseNameServerPolicy(nsPolicy map[string]string) (map[string]dns.NameServer, error) {
+func parseNameServerPolicy(nsPolicy map[string]string, preferH3 bool) (map[string]dns.NameServer, error) {
 	policy := map[string]dns.NameServer{}
 
 	for domain, server := range nsPolicy {
-		nameservers, err := parseNameServer([]string{server})
+		nameservers, err := parseNameServer([]string{server}, preferH3)
 		if err != nil {
 			return nil, err
 		}
@@ -824,26 +1039,26 @@ func parseDNS(rawCfg *RawConfig, hosts *trie.DomainTrie[netip.Addr], rules []C.R
 		},
 	}
 	var err error
-	if dnsCfg.NameServer, err = parseNameServer(cfg.NameServer); err != nil {
+	if dnsCfg.NameServer, err = parseNameServer(cfg.NameServer, cfg.PreferH3); err != nil {
 		return nil, err
 	}
 
-	if dnsCfg.Fallback, err = parseNameServer(cfg.Fallback); err != nil {
+	if dnsCfg.Fallback, err = parseNameServer(cfg.Fallback, cfg.PreferH3); err != nil {
 		return nil, err
 	}
 
-	if dnsCfg.NameServerPolicy, err = parseNameServerPolicy(cfg.NameServerPolicy); err != nil {
+	if dnsCfg.NameServerPolicy, err = parseNameServerPolicy(cfg.NameServerPolicy, cfg.PreferH3); err != nil {
 		return nil, err
 	}
 
-	if dnsCfg.ProxyServerNameserver, err = parseNameServer(cfg.ProxyServerNameserver); err != nil {
+	if dnsCfg.ProxyServerNameserver, err = parseNameServer(cfg.ProxyServerNameserver, cfg.PreferH3); err != nil {
 		return nil, err
 	}
 
 	if len(cfg.DefaultNameserver) == 0 {
 		return nil, errors.New("default nameserver should have at least one nameserver")
 	}
-	if dnsCfg.DefaultNameserver, err = parseNameServer(cfg.DefaultNameserver); err != nil {
+	if dnsCfg.DefaultNameserver, err = parseNameServer(cfg.DefaultNameserver, cfg.PreferH3); err != nil {
 		return nil, err
 	}
 	// check default nameserver is pure ip addr
@@ -859,35 +1074,36 @@ func parseDNS(rawCfg *RawConfig, hosts *trie.DomainTrie[netip.Addr], rules []C.R
 		}
 	}
 
+	fakeIPRange, err := netip.ParsePrefix(cfg.FakeIPRange)
+	T.SetFakeIPRange(fakeIPRange)
 	if cfg.EnhancedMode == C.DNSFakeIP {
-		ipnet, err := netip.ParsePrefix(cfg.FakeIPRange)
 		if err != nil {
 			return nil, err
 		}
 
-		var host *trie.DomainTrie[bool]
+		var host *trie.DomainTrie[struct{}]
 		// fake ip skip host filter
 		if len(cfg.FakeIPFilter) != 0 {
-			host = trie.New[bool]()
+			host = trie.New[struct{}]()
 			for _, domain := range cfg.FakeIPFilter {
-				_ = host.Insert(domain, true)
+				_ = host.Insert(domain, struct{}{})
 			}
 		}
 
 		if len(dnsCfg.Fallback) != 0 {
 			if host == nil {
-				host = trie.New[bool]()
+				host = trie.New[struct{}]()
 			}
 			for _, fb := range dnsCfg.Fallback {
 				if net.ParseIP(fb.Addr) != nil {
 					continue
 				}
-				_ = host.Insert(fb.Addr, true)
+				_ = host.Insert(fb.Addr, struct{}{})
 			}
 		}
 
 		pool, err := fakeip.New(fakeip.Options{
-			IPNet:       &ipnet,
+			IPNet:       &fakeIPRange,
 			Size:        1000,
 			Host:        host,
 			Persistence: rawCfg.Profile.StoreFakeIP,
@@ -930,18 +1146,7 @@ func parseAuthentication(rawRecords []string) []auth.AuthUser {
 	return users
 }
 
-func parseTun(rawTun RawTun, general *General, dnsCfg *DNS) (*Tun, error) {
-	if rawTun.Enable && rawTun.AutoDetectInterface {
-		autoDetectInterfaceName, err := commons.GetAutoDetectInterface()
-		if err != nil {
-			log.Warnln("Can not find auto detect interface.[%s]", err)
-		} else {
-			log.Warnln("Auto detect interface: %s", autoDetectInterfaceName)
-		}
-
-		general.Interface = autoDetectInterfaceName
-	}
-
+func parseTun(rawTun RawTun, general *General) error {
 	var dnsHijack []netip.AddrPort
 
 	for _, d := range rawTun.DNSHijack {
@@ -951,34 +1156,52 @@ func parseTun(rawTun RawTun, general *General, dnsCfg *DNS) (*Tun, error) {
 		d = strings.Replace(d, "any", "0.0.0.0", 1)
 		addrPort, err := netip.ParseAddrPort(d)
 		if err != nil {
-			return nil, fmt.Errorf("parse dns-hijack url error: %w", err)
+			return fmt.Errorf("parse dns-hijack url error: %w", err)
 		}
 
 		dnsHijack = append(dnsHijack, addrPort)
 	}
 
-	var tunAddressPrefix netip.Prefix
-	if dnsCfg.FakeIPRange != nil {
-		tunAddressPrefix = *dnsCfg.FakeIPRange.IPNet()
-	} else {
+	tunAddressPrefix := T.FakeIPRange()
+	if !tunAddressPrefix.IsValid() {
 		tunAddressPrefix = netip.MustParsePrefix("198.18.0.1/16")
 	}
+	tunAddressPrefix = netip.PrefixFrom(tunAddressPrefix.Addr(), 30)
 
-	return &Tun{
+	general.Tun = Tun{
 		Enable:              rawTun.Enable,
 		Device:              rawTun.Device,
 		Stack:               rawTun.Stack,
 		DNSHijack:           dnsHijack,
 		AutoRoute:           rawTun.AutoRoute,
 		AutoDetectInterface: rawTun.AutoDetectInterface,
-		TunAddressPrefix:    tunAddressPrefix,
 		RedirectToTun:       rawTun.RedirectToTun,
-	}, nil
+
+		MTU:                    rawTun.MTU,
+		Inet4Address:           []ListenPrefix{ListenPrefix(tunAddressPrefix)},
+		Inet6Address:           rawTun.Inet6Address,
+		StrictRoute:            rawTun.StrictRoute,
+		Inet4RouteAddress:      rawTun.Inet4RouteAddress,
+		Inet6RouteAddress:      rawTun.Inet6RouteAddress,
+		IncludeUID:             rawTun.IncludeUID,
+		IncludeUIDRange:        rawTun.IncludeUIDRange,
+		ExcludeUID:             rawTun.ExcludeUID,
+		ExcludeUIDRange:        rawTun.ExcludeUIDRange,
+		IncludeAndroidUser:     rawTun.IncludeAndroidUser,
+		IncludePackage:         rawTun.IncludePackage,
+		ExcludePackage:         rawTun.ExcludePackage,
+		EndpointIndependentNat: rawTun.EndpointIndependentNat,
+		UDPTimeout:             rawTun.UDPTimeout,
+	}
+
+	return nil
 }
 
 func parseSniffer(snifferRaw RawSniffer) (*Sniffer, error) {
 	sniffer := &Sniffer{
-		Enable: snifferRaw.Enable,
+		Enable:          snifferRaw.Enable,
+		ForceDnsMapping: snifferRaw.ForceDnsMapping,
+		ParsePureIp:     snifferRaw.ParsePureIp,
 	}
 
 	var ports []utils.Range[uint16]
@@ -1029,17 +1252,17 @@ func parseSniffer(snifferRaw RawSniffer) (*Sniffer, error) {
 	for st := range loadSniffer {
 		sniffer.Sniffers = append(sniffer.Sniffers, st)
 	}
-	sniffer.ForceDomain = trie.New[bool]()
+	sniffer.ForceDomain = trie.New[struct{}]()
 	for _, domain := range snifferRaw.ForceDomain {
-		err := sniffer.ForceDomain.Insert(domain, true)
+		err := sniffer.ForceDomain.Insert(domain, struct{}{})
 		if err != nil {
 			return nil, fmt.Errorf("error domian[%s] in force-domain, error:%v", domain, err)
 		}
 	}
 
-	sniffer.SkipDomain = trie.New[bool]()
+	sniffer.SkipDomain = trie.New[struct{}]()
 	for _, domain := range snifferRaw.SkipDomain {
-		err := sniffer.SkipDomain.Insert(domain, true)
+		err := sniffer.SkipDomain.Insert(domain, struct{}{})
 		if err != nil {
 			return nil, fmt.Errorf("error domian[%s] in force-domain, error:%v", domain, err)
 		}

@@ -82,16 +82,16 @@ func jumpHash(key uint64, buckets int32) int32 {
 
 // DialContext implements C.ProxyAdapter
 func (lb *LoadBalance) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (c C.Conn, err error) {
+	proxy := lb.Unwrap(metadata, true)
+
 	defer func() {
 		if err == nil {
 			c.AppendToChains(lb)
 			lb.onDialSuccess()
 		} else {
-			lb.onDialFailed()
+			lb.onDialFailed(proxy.Type(), err)
 		}
 	}()
-
-	proxy := lb.Unwrap(metadata)
 
 	c, err = proxy.DialContext(ctx, metadata, lb.Base.DialOptions(opts...)...)
 	return
@@ -105,7 +105,7 @@ func (lb *LoadBalance) ListenPacketContext(ctx context.Context, metadata *C.Meta
 		}
 	}()
 
-	proxy := lb.Unwrap(metadata)
+	proxy := lb.Unwrap(metadata, true)
 	return proxy.ListenPacketContext(ctx, metadata, lb.Base.DialOptions(opts...)...)
 }
 
@@ -157,7 +157,7 @@ func strategyConsistentHashing() strategyFn {
 func strategyStickySessions() strategyFn {
 	ttl := time.Minute * 10
 	maxRetry := 5
-	lruCache := cache.NewLRUCache[uint64, int](
+	lruCache := cache.New[uint64, int](
 		cache.WithAge[uint64, int](int64(ttl.Seconds())),
 		cache.WithSize[uint64, int](1000))
 	return func(proxies []C.Proxy, metadata *C.Metadata) C.Proxy {
@@ -190,8 +190,8 @@ func strategyStickySessions() strategyFn {
 }
 
 // Unwrap implements C.ProxyAdapter
-func (lb *LoadBalance) Unwrap(metadata *C.Metadata) C.Proxy {
-	proxies := lb.GetProxies(true)
+func (lb *LoadBalance) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
+	proxies := lb.GetProxies(touch)
 	return lb.strategyFn(proxies, metadata)
 }
 
@@ -228,6 +228,7 @@ func NewLoadBalance(option *GroupCommonOption, providers []provider.ProxyProvide
 				RoutingMark: option.RoutingMark,
 			},
 			option.Filter,
+			option.ExcludeFilter,
 			providers,
 		}),
 		strategyFn: strategyFn,

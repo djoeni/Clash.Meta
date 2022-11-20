@@ -6,14 +6,12 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+
+	"github.com/Dreamacro/clash/transport/socks5"
 )
 
 // Socks addr type
 const (
-	AtypIPv4       = 1
-	AtypDomainName = 3
-	AtypIPv6       = 4
-
 	TCP NetWork = iota
 	UDP
 	ALLNet
@@ -22,8 +20,12 @@ const (
 	HTTPS
 	SOCKS4
 	SOCKS5
+	SHADOWSOCKS
+	VMESS
 	REDIR
 	TPROXY
+	TCPTUN
+	UDPTUN
 	TUN
 	INNER
 )
@@ -55,10 +57,18 @@ func (t Type) String() string {
 		return "Socks4"
 	case SOCKS5:
 		return "Socks5"
+	case SHADOWSOCKS:
+		return "ShadowSocks"
+	case VMESS:
+		return "Vmess"
 	case REDIR:
 		return "Redir"
 	case TPROXY:
 		return "TProxy"
+	case TCPTUN:
+		return "TcpTun"
+	case UDPTUN:
+		return "UdpTun"
 	case TUN:
 		return "Tun"
 	case INNER:
@@ -105,10 +115,11 @@ type Metadata struct {
 	DstIP       netip.Addr `json:"destinationIP"`
 	SrcPort     string     `json:"sourcePort"`
 	DstPort     string     `json:"destinationPort"`
-	AddrType    int        `json:"-"`
+	InIP        netip.Addr `json:"inboundIP"`
+	InPort      string     `json:"inboundPort"`
 	Host        string     `json:"host"`
 	DNSMode     DNSMode    `json:"dnsMode"`
-	Uid         *int32     `json:"uid"`
+	Uid         *uint32    `json:"uid"`
 	Process     string     `json:"process"`
 	ProcessPath string     `json:"processPath"`
 	RemoteDst   string     `json:"remoteDestination"`
@@ -138,6 +149,17 @@ func (m *Metadata) SourceDetail() string {
 	}
 }
 
+func (m *Metadata) AddrType() int {
+	switch true {
+	case m.Host != "" || !m.DstIP.IsValid():
+		return socks5.AtypDomainName
+	case m.DstIP.Is4():
+		return socks5.AtypIPv4
+	default:
+		return socks5.AtypIPv6
+	}
+}
+
 func (m *Metadata) Resolved() bool {
 	return m.DstIP.IsValid()
 }
@@ -145,14 +167,9 @@ func (m *Metadata) Resolved() bool {
 // Pure is used to solve unexpected behavior
 // when dialing proxy connection in DNSMapping mode.
 func (m *Metadata) Pure() *Metadata {
-	if m.DNSMode == DNSMapping && m.DstIP.IsValid() {
+	if (m.DNSMode == DNSMapping || m.DNSMode == DNSHosts) && m.DstIP.IsValid() {
 		copyM := *m
 		copyM.Host = ""
-		if copyM.DstIP.Is4() {
-			copyM.AddrType = AtypIPv4
-		} else {
-			copyM.AddrType = AtypIPv6
-		}
 		return &copyM
 	}
 

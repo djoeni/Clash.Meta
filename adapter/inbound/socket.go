@@ -22,6 +22,14 @@ func NewSocket(target socks5.Addr, conn net.Conn, source C.Type) *context.ConnCo
 			metadata.SrcPort = port
 		}
 	}
+	localAddr := conn.LocalAddr()
+	// Filter when net.Addr interface is nil
+	if localAddr != nil {
+		if ip, port, err := parseAddr(localAddr.String()); err == nil {
+			metadata.InIP = ip
+			metadata.InPort = port
+		}
+	}
 
 	return context.NewConnContext(conn, metadata)
 }
@@ -32,17 +40,12 @@ func NewInner(conn net.Conn, dst string, host string) *context.ConnContext {
 	metadata.Type = C.INNER
 	metadata.DNSMode = C.DNSMapping
 	metadata.Host = host
-	metadata.AddrType = C.AtypDomainName
 	metadata.Process = C.ClashName
 	if h, port, err := net.SplitHostPort(dst); err == nil {
 		metadata.DstPort = port
 		if host == "" {
 			if ip, err := netip.ParseAddr(h); err == nil {
 				metadata.DstIP = ip
-				metadata.AddrType = C.AtypIPv4
-				if ip.Is6() {
-					metadata.AddrType = C.AtypIPv6
-				}
 			}
 		}
 	}

@@ -6,14 +6,37 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/vishvananda/netlink"
-
 	"github.com/Dreamacro/clash/common/cmd"
 	"github.com/Dreamacro/clash/component/dialer"
 	"github.com/Dreamacro/clash/component/ebpf/redir"
 	"github.com/Dreamacro/clash/component/ebpf/tc"
 	C "github.com/Dreamacro/clash/constant"
+	"github.com/sagernet/netlink"
 )
+
+func GetAutoDetectInterface() (string, error) {
+	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+	if err != nil {
+		return "", err
+	}
+
+	for _, route := range routes {
+		if route.Dst == nil {
+			lk, err := netlink.LinkByIndex(route.LinkIndex)
+			if err != nil {
+				return "", err
+			}
+
+			if lk.Type() == "tuntap" {
+				continue
+			}
+
+			return lk.Attrs().Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("interface not found")
+}
 
 // NewTcEBpfProgram new redirect to tun ebpf program
 func NewTcEBpfProgram(ifaceNames []string, tunName string) (*TcEBpfProgram, error) {
