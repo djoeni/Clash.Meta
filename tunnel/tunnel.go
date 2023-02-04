@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Dreamacro/clash/adapter/inbound"
+	"github.com/jpillora/backoff"
+
 	"github.com/Dreamacro/clash/component/nat"
 	P "github.com/Dreamacro/clash/component/process"
 	"github.com/Dreamacro/clash/component/resolver"
@@ -25,9 +26,11 @@ import (
 
 var (
 	tcpQueue       = make(chan C.ConnContext, 200)
-	udpQueue       = make(chan *inbound.PacketAdapter, 200)
+	udpQueue       = make(chan C.PacketAdapter, 200)
 	natTable       = nat.New()
 	rules          []C.Rule
+	listeners      = make(map[string]C.InboundListener)
+	subRules       map[string][]C.Rule
 	proxies        = make(map[string]C.Proxy)
 	providers      map[string]provider.ProxyProvider
 	ruleProviders  map[string]provider.RuleProvider
@@ -75,7 +78,7 @@ func TCPIn() chan<- C.ConnContext {
 }
 
 // UDPIn return fan-in udp queue
-func UDPIn() chan<- *inbound.PacketAdapter {
+func UDPIn() chan<- C.PacketAdapter {
 	return udpQueue
 }
 
@@ -84,11 +87,16 @@ func Rules() []C.Rule {
 	return rules
 }
 
+func Listeners() map[string]C.InboundListener {
+	return listeners
+}
+
 // UpdateRules handle update rules
-func UpdateRules(newRules []C.Rule, rp map[string]provider.RuleProvider) {
+func UpdateRules(newRules []C.Rule, newSubRule map[string][]C.Rule, rp map[string]provider.RuleProvider) {
 	configMux.Lock()
 	rules = newRules
 	ruleProviders = rp
+	subRules = newSubRule
 	configMux.Unlock()
 }
 
@@ -113,6 +121,12 @@ func UpdateProxies(newProxies map[string]C.Proxy, newProviders map[string]provid
 	proxies = newProxies
 	providers = newProviders
 	configMux.Unlock()
+}
+
+func UpdateListeners(newListeners map[string]C.InboundListener) {
+	configMux.Lock()
+	defer configMux.Unlock()
+	listeners = newListeners
 }
 
 func UpdateSniffer(dispatcher *sniffer.SnifferDispatcher) {
@@ -192,7 +206,16 @@ func preHandleMetadata(metadata *C.Metadata) error {
 	return nil
 }
 
-func resolveMetadata(_ C.PlainContext, metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err error) {
+func resolveMetadata(ctx C.PlainContext, metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err error) {
+	if metadata.SpecialProxy != "" {
+		var exist bool
+		proxy, exist = proxies[metadata.SpecialProxy]
+		if !exist {
+			err = fmt.Errorf("proxy %s not found", metadata.SpecialProxy)
+		}
+		return
+	}
+
 	switch mode {
 	case Direct:
 		proxy = proxies["DIRECT"]
@@ -205,7 +228,7 @@ func resolveMetadata(_ C.PlainContext, metadata *C.Metadata) (proxy C.Proxy, rul
 	return
 }
 
-func handleUDPConn(packet *inbound.PacketAdapter) {
+func handleUDPConn(packet C.PacketAdapter) {
 	metadata := packet.Metadata()
 	if !metadata.Valid() {
 		log.Warnln("[Metadata] not valid: %#v", metadata)
@@ -273,8 +296,9 @@ func handleUDPConn(packet *inbound.PacketAdapter) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), C.DefaultUDPTimeout)
 		defer cancel()
-		rawPc, err := proxy.ListenPacketContext(ctx, metadata.Pure())
-		if err != nil {
+		rawPc, err := retry(ctx, func(ctx context.Context) (C.PacketConn, error) {
+			return proxy.ListenPacketContext(ctx, metadata.Pure())
+		}, func(err error) {
 			if rule == nil {
 				log.Warnln(
 					"[UDP] dial %s %s --> %s error: %s",
@@ -286,6 +310,8 @@ func handleUDPConn(packet *inbound.PacketAdapter) {
 			} else {
 				log.Warnln("[UDP] dial %s (match %s/%s) %s --> %s error: %s", proxy.Name(), rule.RuleType().String(), rule.Payload(), metadata.SourceAddress(), metadata.RemoteAddress(), err.Error())
 			}
+		})
+		if err != nil {
 			return
 		}
 		pCtx.InjectPacketConn(rawPc)
@@ -293,6 +319,8 @@ func handleUDPConn(packet *inbound.PacketAdapter) {
 		pc := statistic.NewUDPTracker(rawPc, statistic.DefaultManager, metadata, rule)
 
 		switch true {
+		case metadata.SpecialProxy != "":
+			log.Infoln("[UDP] %s --> %s using %s", metadata.SourceAddress(), metadata.RemoteAddress(), metadata.SpecialProxy)
 		case rule != nil:
 			if rule.Payload() != "" {
 				log.Infoln("[UDP] %s --> %s match %s using %s", metadata.SourceDetail(), metadata.RemoteAddress(), fmt.Sprintf("%s(%s)", rule.RuleType().String(), rule.Payload()), rawPc.Chains().String())
@@ -308,7 +336,7 @@ func handleUDPConn(packet *inbound.PacketAdapter) {
 		}
 
 		oAddr := metadata.DstIP
-		go handleUDPToLocal(packet.UDPPacket, pc, key, oAddr, fAddr)
+		go handleUDPToLocal(packet, pc, key, oAddr, fAddr)
 
 		natTable.Set(key, pc)
 		handle()
@@ -354,8 +382,9 @@ func handleTCPConn(connCtx C.ConnContext) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTCPTimeout)
 	defer cancel()
-	remoteConn, err := proxy.DialContext(ctx, dialMetadata)
-	if err != nil {
+	remoteConn, err := retry(ctx, func(ctx context.Context) (C.Conn, error) {
+		return proxy.DialContext(ctx, dialMetadata)
+	}, func(err error) {
 		if rule == nil {
 			log.Warnln(
 				"[TCP] dial %s %s --> %s error: %s",
@@ -367,6 +396,8 @@ func handleTCPConn(connCtx C.ConnContext) {
 		} else {
 			log.Warnln("[TCP] dial %s (match %s/%s) %s --> %s error: %s", proxy.Name(), rule.RuleType().String(), rule.Payload(), metadata.SourceAddress(), metadata.RemoteAddress(), err.Error())
 		}
+	})
+	if err != nil {
 		return
 	}
 
@@ -376,6 +407,8 @@ func handleTCPConn(connCtx C.ConnContext) {
 	}(remoteConn)
 
 	switch true {
+	case metadata.SpecialProxy != "":
+		log.Infoln("[TCP] %s --> %s using %s", metadata.SourceAddress(), metadata.RemoteAddress(), metadata.SpecialProxy)
 	case rule != nil:
 		if rule.Payload() != "" {
 			log.Infoln("[TCP] %s --> %s match %s using %s", metadata.SourceDetail(), metadata.RemoteAddress(), fmt.Sprintf("%s(%s)", rule.RuleType().String(), rule.Payload()), remoteConn.Chains().String())
@@ -414,7 +447,7 @@ func match(metadata *C.Metadata) (C.Proxy, C.Rule, error) {
 		resolved = true
 	}
 
-	for _, rule := range rules {
+	for _, rule := range getRules(metadata) {
 		if !resolved && shouldResolveIP(rule, metadata) {
 			func() {
 				ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDNSTimeout)
@@ -472,4 +505,40 @@ func match(metadata *C.Metadata) (C.Proxy, C.Rule, error) {
 	}
 
 	return proxies["DIRECT"], nil, nil
+}
+
+func getRules(metadata *C.Metadata) []C.Rule {
+	if sr, ok := subRules[metadata.SpecialRules]; ok {
+		log.Debugln("[Rule] use %s rules", metadata.SpecialRules)
+		return sr
+	} else {
+		log.Debugln("[Rule] use default rules")
+		return rules
+	}
+}
+
+func retry[T any](ctx context.Context, ft func(context.Context) (T, error), fe func(err error)) (t T, err error) {
+	b := &backoff.Backoff{
+		Min:    10 * time.Millisecond,
+		Max:    1 * time.Second,
+		Factor: 2,
+		Jitter: true,
+	}
+	for i := 0; i < 10; i++ {
+		t, err = ft(ctx)
+		if err != nil {
+			if fe != nil {
+				fe(err)
+			}
+			select {
+			case <-time.After(b.Duration()):
+				continue
+			case <-ctx.Done():
+				return
+			}
+		} else {
+			break
+		}
+	}
+	return
 }

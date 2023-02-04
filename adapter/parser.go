@@ -2,14 +2,13 @@ package adapter
 
 import (
 	"fmt"
-
 	"github.com/Dreamacro/clash/adapter/outbound"
 	"github.com/Dreamacro/clash/common/structure"
 	C "github.com/Dreamacro/clash/constant"
 )
 
 func ParseProxy(mapping map[string]any) (C.Proxy, error) {
-	decoder := structure.NewDecoder(structure.Option{TagName: "proxy", WeaklyTypedInput: true})
+	decoder := structure.NewDecoder(structure.Option{TagName: "proxy", WeaklyTypedInput: true, KeyReplacer: structure.DefaultKeyReplacer})
 	proxyType, existType := mapping["type"].(string)
 	if !existType {
 		return nil, fmt.Errorf("missing type")
@@ -89,12 +88,19 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 		}
 		proxy, err = outbound.NewHysteria(*hyOption)
 	case "wireguard":
-		hyOption := &outbound.WireGuardOption{}
-		err = decoder.Decode(mapping, hyOption)
+		wgOption := &outbound.WireGuardOption{}
+		err = decoder.Decode(mapping, wgOption)
 		if err != nil {
 			break
 		}
-		proxy, err = outbound.NewWireGuard(*hyOption)
+		proxy, err = outbound.NewWireGuard(*wgOption)
+	case "tuic":
+		tuicOption := &outbound.TuicOption{}
+		err = decoder.Decode(mapping, tuicOption)
+		if err != nil {
+			break
+		}
+		proxy, err = outbound.NewTuic(*tuicOption)
 	default:
 		return nil, fmt.Errorf("unsupport proxy type: %s", proxyType)
 	}

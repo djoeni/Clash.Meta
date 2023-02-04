@@ -24,9 +24,9 @@ const (
 	VMESS
 	REDIR
 	TPROXY
-	TCPTUN
-	UDPTUN
+	TUNNEL
 	TUN
+	TUIC
 	INNER
 )
 
@@ -65,12 +65,12 @@ func (t Type) String() string {
 		return "Redir"
 	case TPROXY:
 		return "TProxy"
-	case TCPTUN:
-		return "TcpTun"
-	case UDPTUN:
-		return "UdpTun"
+	case TUNNEL:
+		return "Tunnel"
 	case TUN:
 		return "Tun"
+	case TUIC:
+		return "Tuic"
 	case INNER:
 		return "Inner"
 	default:
@@ -89,12 +89,20 @@ func ParseType(t string) (*Type, error) {
 		res = SOCKS4
 	case "SOCKS5":
 		res = SOCKS5
+	case "SHADOWSOCKS":
+		res = SHADOWSOCKS
+	case "VMESS":
+		res = VMESS
 	case "REDIR":
 		res = REDIR
 	case "TPROXY":
 		res = TPROXY
+	case "TUNNEL":
+		res = TUNNEL
 	case "TUN":
 		res = TUN
+	case "TUIC":
+		res = TUIC
 	case "INNER":
 		res = INNER
 	default:
@@ -109,20 +117,23 @@ func (t Type) MarshalJSON() ([]byte, error) {
 
 // Metadata is used to store connection address
 type Metadata struct {
-	NetWork     NetWork    `json:"network"`
-	Type        Type       `json:"type"`
-	SrcIP       netip.Addr `json:"sourceIP"`
-	DstIP       netip.Addr `json:"destinationIP"`
-	SrcPort     string     `json:"sourcePort"`
-	DstPort     string     `json:"destinationPort"`
-	InIP        netip.Addr `json:"inboundIP"`
-	InPort      string     `json:"inboundPort"`
-	Host        string     `json:"host"`
-	DNSMode     DNSMode    `json:"dnsMode"`
-	Uid         *uint32    `json:"uid"`
-	Process     string     `json:"process"`
-	ProcessPath string     `json:"processPath"`
-	RemoteDst   string     `json:"remoteDestination"`
+	NetWork      NetWork    `json:"network"`
+	Type         Type       `json:"type"`
+	SrcIP        netip.Addr `json:"sourceIP"`
+	DstIP        netip.Addr `json:"destinationIP"`
+	SrcPort      string     `json:"sourcePort"`
+	DstPort      string     `json:"destinationPort"`
+	InIP         netip.Addr `json:"inboundIP"`
+	InPort       string     `json:"inboundPort"`
+	InName       string     `json:"inboundName"`
+	Host         string     `json:"host"`
+	DNSMode      DNSMode    `json:"dnsMode"`
+	Uid          *uint32    `json:"uid"`
+	Process      string     `json:"process"`
+	ProcessPath  string     `json:"processPath"`
+	SpecialProxy string     `json:"specialProxy"`
+	SpecialRules string     `json:"specialRules"`
+	RemoteDst    string     `json:"remoteDestination"`
 }
 
 func (m *Metadata) RemoteAddress() string {

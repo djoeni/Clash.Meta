@@ -2,7 +2,6 @@ package route
 
 import (
 	"net/http"
-	"net/netip"
 	"path/filepath"
 	"sync"
 
@@ -13,6 +12,7 @@ import (
 	C "github.com/Dreamacro/clash/constant"
 	"github.com/Dreamacro/clash/hub/executor"
 	P "github.com/Dreamacro/clash/listener"
+	LC "github.com/Dreamacro/clash/listener/config"
 	"github.com/Dreamacro/clash/log"
 	"github.com/Dreamacro/clash/tunnel"
 
@@ -41,6 +41,7 @@ type configSchema struct {
 	TProxyPort        *int               `json:"tproxy-port"`
 	MixedPort         *int               `json:"mixed-port"`
 	Tun               *tunSchema         `json:"tun"`
+	TuicServer        *tuicServerSchema  `json:"tuic-server"`
 	ShadowSocksConfig *string            `json:"ss-config"`
 	VmessConfig       *string            `json:"vmess-config"`
 	TcptunConfig      *string            `json:"tcptun-config"`
@@ -56,29 +57,42 @@ type configSchema struct {
 }
 
 type tunSchema struct {
-	Enable              bool              `yaml:"enable" json:"enable"`
-	Device              *string           `yaml:"device" json:"device"`
-	Stack               *C.TUNStack       `yaml:"stack" json:"stack"`
-	DNSHijack           *[]netip.AddrPort `yaml:"dns-hijack" json:"dns-hijack"`
-	AutoRoute           *bool             `yaml:"auto-route" json:"auto-route"`
-	AutoDetectInterface *bool             `yaml:"auto-detect-interface" json:"auto-detect-interface"`
+	Enable              bool        `yaml:"enable" json:"enable"`
+	Device              *string     `yaml:"device" json:"device"`
+	Stack               *C.TUNStack `yaml:"stack" json:"stack"`
+	DNSHijack           *[]string   `yaml:"dns-hijack" json:"dns-hijack"`
+	AutoRoute           *bool       `yaml:"auto-route" json:"auto-route"`
+	AutoDetectInterface *bool       `yaml:"auto-detect-interface" json:"auto-detect-interface"`
 	//RedirectToTun       []string   		  `yaml:"-" json:"-"`
 
 	MTU *uint32 `yaml:"mtu" json:"mtu,omitempty"`
 	//Inet4Address           *[]config.ListenPrefix `yaml:"inet4-address" json:"inet4-address,omitempty"`
-	Inet6Address           *[]config.ListenPrefix `yaml:"inet6-address" json:"inet6-address,omitempty"`
-	StrictRoute            *bool                  `yaml:"strict-route" json:"strict-route,omitempty"`
-	Inet4RouteAddress      *[]config.ListenPrefix `yaml:"inet4-route-address" json:"inet4-route-address,omitempty"`
-	Inet6RouteAddress      *[]config.ListenPrefix `yaml:"inet6-route-address" json:"inet6-route-address,omitempty"`
-	IncludeUID             *[]uint32              `yaml:"include-uid" json:"include-uid,omitempty"`
-	IncludeUIDRange        *[]string              `yaml:"include-uid-range" json:"include-uid-range,omitempty"`
-	ExcludeUID             *[]uint32              `yaml:"exclude-uid" json:"exclude-uid,omitempty"`
-	ExcludeUIDRange        *[]string              `yaml:"exclude-uid-range" json:"exclude-uid-range,omitempty"`
-	IncludeAndroidUser     *[]int                 `yaml:"include-android-user" json:"include-android-user,omitempty"`
-	IncludePackage         *[]string              `yaml:"include-package" json:"include-package,omitempty"`
-	ExcludePackage         *[]string              `yaml:"exclude-package" json:"exclude-package,omitempty"`
-	EndpointIndependentNat *bool                  `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
-	UDPTimeout             *int64                 `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
+	Inet6Address           *[]LC.ListenPrefix `yaml:"inet6-address" json:"inet6-address,omitempty"`
+	StrictRoute            *bool              `yaml:"strict-route" json:"strict-route,omitempty"`
+	Inet4RouteAddress      *[]LC.ListenPrefix `yaml:"inet4-route-address" json:"inet4-route-address,omitempty"`
+	Inet6RouteAddress      *[]LC.ListenPrefix `yaml:"inet6-route-address" json:"inet6-route-address,omitempty"`
+	IncludeUID             *[]uint32          `yaml:"include-uid" json:"include-uid,omitempty"`
+	IncludeUIDRange        *[]string          `yaml:"include-uid-range" json:"include-uid-range,omitempty"`
+	ExcludeUID             *[]uint32          `yaml:"exclude-uid" json:"exclude-uid,omitempty"`
+	ExcludeUIDRange        *[]string          `yaml:"exclude-uid-range" json:"exclude-uid-range,omitempty"`
+	IncludeAndroidUser     *[]int             `yaml:"include-android-user" json:"include-android-user,omitempty"`
+	IncludePackage         *[]string          `yaml:"include-package" json:"include-package,omitempty"`
+	ExcludePackage         *[]string          `yaml:"exclude-package" json:"exclude-package,omitempty"`
+	EndpointIndependentNat *bool              `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
+	UDPTimeout             *int64             `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
+}
+
+type tuicServerSchema struct {
+	Enable                bool      `yaml:"enable" json:"enable"`
+	Listen                *string   `yaml:"listen" json:"listen"`
+	Token                 *[]string `yaml:"token" json:"token"`
+	Certificate           *string   `yaml:"certificate" json:"certificate"`
+	PrivateKey            *string   `yaml:"private-key" json:"private-key"`
+	CongestionController  *string   `yaml:"congestion-controller" json:"congestion-controller,omitempty"`
+	MaxIdleTime           *int      `yaml:"max-idle-time" json:"max-idle-time,omitempty"`
+	AuthenticationTimeout *int      `yaml:"authentication-timeout" json:"authentication-timeout,omitempty"`
+	ALPN                  *[]string `yaml:"alpn" json:"alpn,omitempty"`
+	MaxUdpRelayPacketSize *int      `yaml:"max-udp-relay-packet-size" json:"max-udp-relay-packet-size,omitempty"`
 }
 
 func getConfigs(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +116,7 @@ func pointerOrDefaultString(p *string, def string) string {
 	return def
 }
 
-func pointerOrDefaultTun(p *tunSchema, def config.Tun) config.Tun {
+func pointerOrDefaultTun(p *tunSchema, def LC.Tun) LC.Tun {
 	if p != nil {
 		def.Enable = p.Enable
 		if p.Device != nil {
@@ -160,6 +174,40 @@ func pointerOrDefaultTun(p *tunSchema, def config.Tun) config.Tun {
 	return def
 }
 
+func pointerOrDefaultTuicServer(p *tuicServerSchema, def LC.TuicServer) LC.TuicServer {
+	if p != nil {
+		def.Enable = p.Enable
+		if p.Listen != nil {
+			def.Listen = *p.Listen
+		}
+		if p.Token != nil {
+			def.Token = *p.Token
+		}
+		if p.Certificate != nil {
+			def.Certificate = *p.Certificate
+		}
+		if p.PrivateKey != nil {
+			def.PrivateKey = *p.PrivateKey
+		}
+		if p.CongestionController != nil {
+			def.CongestionController = *p.CongestionController
+		}
+		if p.MaxIdleTime != nil {
+			def.MaxIdleTime = *p.MaxIdleTime
+		}
+		if p.AuthenticationTimeout != nil {
+			def.AuthenticationTimeout = *p.AuthenticationTimeout
+		}
+		if p.ALPN != nil {
+			def.ALPN = *p.ALPN
+		}
+		if p.MaxUdpRelayPacketSize != nil {
+			def.MaxUdpRelayPacketSize = *p.MaxUdpRelayPacketSize
+		}
+	}
+	return def
+}
+
 func patchConfigs(w http.ResponseWriter, r *http.Request) {
 	general := &configSchema{}
 	if err := render.DecodeJSON(r.Body, general); err != nil {
@@ -201,8 +249,7 @@ func patchConfigs(w http.ResponseWriter, r *http.Request) {
 	P.ReCreateTun(pointerOrDefaultTun(general.Tun, P.LastTunConf), tcpIn, udpIn)
 	P.ReCreateShadowSocks(pointerOrDefaultString(general.ShadowSocksConfig, ports.ShadowSocksConfig), tcpIn, udpIn)
 	P.ReCreateVmess(pointerOrDefaultString(general.VmessConfig, ports.VmessConfig), tcpIn, udpIn)
-	P.ReCreateTcpTun(pointerOrDefaultString(general.TcptunConfig, ports.TcpTunConfig), tcpIn, udpIn)
-	P.ReCreateUdpTun(pointerOrDefaultString(general.UdptunConfig, ports.UdpTunConfig), tcpIn, udpIn)
+	P.ReCreateTuic(pointerOrDefaultTuicServer(general.TuicServer, P.LastTuicConf), tcpIn, udpIn)
 
 	if general.Mode != nil {
 		tunnel.SetMode(*general.Mode)

@@ -1,79 +1,85 @@
 package tunnel
 
 import (
+	"fmt"
 	"net"
 
 	"github.com/Dreamacro/clash/adapter/inbound"
 	"github.com/Dreamacro/clash/common/pool"
 	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/log"
 	"github.com/Dreamacro/clash/transport/socks5"
 )
 
-type UdpListener struct {
-	closed    bool
-	config    string
-	listeners []net.PacketConn
+type PacketConn struct {
+	conn   net.PacketConn
+	addr   string
+	target socks5.Addr
+	proxy  string
+	closed bool
 }
 
-func NewUdp(config string, in chan<- *inbound.PacketAdapter) (*UdpListener, error) {
-	ul := &UdpListener{false, config, nil}
-	pl := PairList{}
-	err := pl.Set(config)
+// RawAddress implements C.Listener
+func (l *PacketConn) RawAddress() string {
+	return l.addr
+}
+
+// Address implements C.Listener
+func (l *PacketConn) Address() string {
+	return l.conn.LocalAddr().String()
+}
+
+// Close implements C.Listener
+func (l *PacketConn) Close() error {
+	l.closed = true
+	return l.conn.Close()
+}
+
+func NewUDP(addr, target, proxy string, in chan<- C.PacketAdapter, additions ...inbound.Addition) (*PacketConn, error) {
+	l, err := net.ListenPacket("udp", addr)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, p := range pl {
-		addr := p[0]
-		target := p[1]
-		go func() {
-			tgt := socks5.ParseAddr(target)
-			if tgt == nil {
-				log.Errorln("invalid target address %q", target)
-				return
-			}
-			l, err := net.ListenPacket("udp", addr)
+	targetAddr := socks5.ParseAddr(target)
+	if targetAddr == nil {
+		return nil, fmt.Errorf("invalid target address %s", target)
+	}
+
+	sl := &PacketConn{
+		conn:   l,
+		target: targetAddr,
+		proxy:  proxy,
+		addr:   addr,
+	}
+	go func() {
+		for {
+			buf := pool.Get(pool.UDPBufferSize)
+			n, remoteAddr, err := l.ReadFrom(buf)
 			if err != nil {
-				return
+				pool.Put(buf)
+				if sl.closed {
+					break
+				}
+				continue
 			}
-			ul.listeners = append(ul.listeners, l)
-			log.Infoln("Udp tunnel %s <-> %s", l.LocalAddr().String(), target)
-			for {
-				buf := pool.Get(pool.RelayBufferSize)
-				n, remoteAddr, err := l.ReadFrom(buf)
-				if err != nil {
-					pool.Put(buf)
-					if ul.closed {
-						break
-					}
-					continue
-				}
-				packet := &packet{
-					pc:      l,
-					rAddr:   remoteAddr,
-					payload: buf[:n],
-					bufRef:  buf,
-				}
-				select {
-				case in <- inbound.NewPacket(tgt, packet, C.UDPTUN):
-				default:
-				}
+			sl.handleUDP(l, in, buf[:n], remoteAddr, additions...)
+		}
+	}()
 
-			}
-		}()
-	}
-
-	return ul, nil
+	return sl, nil
 }
 
-func (l *UdpListener) Close() {
-	l.closed = true
-	for _, lis := range l.listeners {
-		_ = lis.Close()
+func (l *PacketConn) handleUDP(pc net.PacketConn, in chan<- C.PacketAdapter, buf []byte, addr net.Addr, additions ...inbound.Addition) {
+	packet := &packet{
+		pc:      pc,
+		rAddr:   addr,
+		payload: buf,
 	}
-}
 
-func (l *UdpListener) Config() string {
-	return l.config
+	ctx := inbound.NewPacket(l.target, packet, C.TUNNEL, additions...)
+	ctx.Metadata().SpecialProxy = l.proxy
+	select {
+	case in <- ctx:
+	default:
+	}
 }

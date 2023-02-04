@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/lucas-clemente/quic-go"
-	"github.com/lucas-clemente/quic-go/congestion"
+	"github.com/metacubex/quic-go"
+	"github.com/metacubex/quic-go/congestion"
 	M "github.com/sagernet/sing/common/metadata"
 
 	"github.com/Dreamacro/clash/component/dialer"
@@ -30,15 +30,14 @@ import (
 )
 
 const (
-	mbpsToBps   = 125000
-	minSpeedBPS = 16384
+	mbpsToBps = 125000
 
 	DefaultStreamReceiveWindow     = 15728640 // 15 MB/s
 	DefaultConnectionReceiveWindow = 67108864 // 64 MB/s
-	DefaultMaxIncomingStreams      = 1024
 
-	DefaultALPN     = "hysteria"
-	DefaultProtocol = "udp"
+	DefaultALPN        = "hysteria"
+	DefaultProtocol    = "udp"
+	DefaultHopInterval = 10
 )
 
 var rateStringRegexp = regexp.MustCompile(`^(\d+)\s*([KMGT]?)([Bb])ps$`)
@@ -90,6 +89,7 @@ type HysteriaOption struct {
 	Name                string   `proxy:"name"`
 	Server              string   `proxy:"server"`
 	Port                int      `proxy:"port"`
+	Ports               string   `proxy:"ports,omitempty"`
 	Protocol            string   `proxy:"protocol,omitempty"`
 	ObfsProtocol        string   `proxy:"obfs-protocol,omitempty"` // compatible with Stash
 	Up                  string   `proxy:"up"`
@@ -97,17 +97,19 @@ type HysteriaOption struct {
 	Down                string   `proxy:"down"`
 	DownSpeed           int      `proxy:"down-speed,omitempty"` // compatible with Stash
 	Auth                string   `proxy:"auth,omitempty"`
-	AuthString          string   `proxy:"auth_str,omitempty"`
+	AuthString          string   `proxy:"auth-str,omitempty"`
 	Obfs                string   `proxy:"obfs,omitempty"`
 	SNI                 string   `proxy:"sni,omitempty"`
 	SkipCertVerify      bool     `proxy:"skip-cert-verify,omitempty"`
 	Fingerprint         string   `proxy:"fingerprint,omitempty"`
 	ALPN                []string `proxy:"alpn,omitempty"`
 	CustomCA            string   `proxy:"ca,omitempty"`
-	CustomCAString      string   `proxy:"ca_str,omitempty"`
-	ReceiveWindowConn   int      `proxy:"recv_window_conn,omitempty"`
-	ReceiveWindow       int      `proxy:"recv_window,omitempty"`
-	DisableMTUDiscovery bool     `proxy:"disable_mtu_discovery,omitempty"`
+	CustomCAString      string   `proxy:"ca-str,omitempty"`
+	ReceiveWindowConn   int      `proxy:"recv-window-conn,omitempty"`
+	ReceiveWindow       int      `proxy:"recv-window,omitempty"`
+	DisableMTUDiscovery bool     `proxy:"disable-mtu-discovery,omitempty"`
+	FastOpen            bool     `proxy:"fast-open,omitempty"`
+	HopInterval         int      `proxy:"hop-interval,omitempty"`
 }
 
 func (c *HysteriaOption) Speed() (uint64, uint64, error) {
@@ -131,8 +133,13 @@ func NewHysteria(option HysteriaOption) (*Hysteria, error) {
 			Timeout: 8 * time.Second,
 		},
 	}
+	var addr string
+	if len(option.Ports) == 0 {
+		addr = net.JoinHostPort(option.Server, strconv.Itoa(option.Port))
+	} else {
+		addr = net.JoinHostPort(option.Server, option.Ports)
+	}
 
-	addr := net.JoinHostPort(option.Server, strconv.Itoa(option.Port))
 	serverName := option.Server
 	if option.SNI != "" {
 		serverName = option.SNI
@@ -182,7 +189,6 @@ func NewHysteria(option HysteriaOption) (*Hysteria, error) {
 	} else {
 		tlsConfig.NextProtos = []string{DefaultALPN}
 	}
-
 	quicConfig := &quic.Config{
 		InitialStreamReceiveWindow:     uint64(option.ReceiveWindowConn),
 		MaxStreamReceiveWindow:         uint64(option.ReceiveWindowConn),
@@ -198,7 +204,11 @@ func NewHysteria(option HysteriaOption) (*Hysteria, error) {
 	if option.Protocol == "" {
 		option.Protocol = DefaultProtocol
 	}
-	if option.ReceiveWindowConn == 0 {
+	if option.HopInterval == 0 {
+		option.HopInterval = DefaultHopInterval
+	}
+	hopInterval := time.Duration(int64(option.HopInterval)) * time.Second
+	if option.ReceiveWindow == 0 {
 		quicConfig.InitialStreamReceiveWindow = DefaultStreamReceiveWindow / 10
 		quicConfig.MaxStreamReceiveWindow = DefaultStreamReceiveWindow
 	}
@@ -235,7 +245,7 @@ func NewHysteria(option HysteriaOption) (*Hysteria, error) {
 	client, err := core.NewClient(
 		addr, option.Protocol, auth, tlsConfig, quicConfig, clientTransport, up, down, func(refBPS uint64) congestion.CongestionControl {
 			return hyCongestion.NewBrutalSender(congestion.ByteCount(refBPS))
-		}, obfuscator,
+		}, obfuscator, hopInterval, option.FastOpen,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("hysteria %s create error: %w", addr, err)
@@ -246,6 +256,7 @@ func NewHysteria(option HysteriaOption) (*Hysteria, error) {
 			addr:   addr,
 			tp:     C.Hysteria,
 			udp:    true,
+			tfo:    option.FastOpen,
 			iface:  option.Interface,
 			rmark:  option.RoutingMark,
 			prefer: C.NewDNSPrefer(option.IPVersion),
