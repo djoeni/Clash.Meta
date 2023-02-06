@@ -21,6 +21,7 @@ PLATFORM_LIST = \
 	darwin-arm64 \
 	linux-amd64-compatible \
 	linux-amd64 \
+        linux-386 \
 	linux-armv5 \
 	linux-armv6 \
 	linux-armv7 \
@@ -43,7 +44,7 @@ WINDOWS_ARCH_LIST = \
 	windows-arm64 \
     windows-arm32v7
 
-all:linux-amd64 linux-arm64\
+all:linux-amd64 linux-arm64 linux-386\
 	darwin-amd64 darwin-arm64\
  	windows-amd64 windows-arm64\
 
